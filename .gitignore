@@ -1,9 +1,2 @@
 node_modules/
-*.log
 *.tmp
-*.swp
-*.swo
-.env
-.env.local
-.env.*.local
-.idea
