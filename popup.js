@@ -225,9 +225,16 @@ async function renderNotes() {
     // Клик открывает САМО объявление: ссылка берётся из заметки, а для
     // старых записей (где хранился URL страницы поиска) восстанавливается
     // по id объявления.
-    item.addEventListener('click', () => {
+    item.addEventListener('click', (e) => {
       const url = resolveNoteUrl(note);
-      if (url) chrome.tabs.create({ url });
+      if (!url) return;
+      // Ctrl/Cmd+клик — фоновая вкладка (как в обычных браузерах), без
+      // переключения фокуса с текущей страницы.
+      if (e.ctrlKey || e.metaKey) {
+        chrome.tabs.create({ url, active: false });
+        return;
+      }
+      chrome.tabs.create({ url });
     });
     // Кнопка удаления — внутри карточки: гасим click, чтобы не открылась вкладка.
     item.querySelector('.note-delete')?.addEventListener('click', async (e) => {
