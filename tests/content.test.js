@@ -45,6 +45,27 @@ const SEARCH_PAGE_HTML = `<!DOCTYPE html><html><body>
 </div>
 </body></html>`;
 
+// Реальная шапка всплывающего чата, прикреплённого к объявлению
+// (мини-мессенджер): рядом с именем продавца есть ссылка на объявление —
+// <a data-marker="header/itemLink" href="/.../garazh_30_m_8457554115">.
+// Сокращено, стабильные атрибуты (data-marker / elementtiming) сохранены.
+const CHAT_INFO_WRAP_INNER = `<div class="infoWrap-_08b2408e96376dfc"><div class="infoContainer-_08b2408e96376dfc"><div class="nameWrapper-_08b2408e96376dfc"><div class="nameContainer-_08b2408e96376dfc"><a class="name-_08b2408e96376dfc name_link-_08b2408e96376dfc" data-marker="header/authorName" href="/user/5613d5e58db907fb786a94013d8f5f78/profile?id=8457554115&amp;iid=8457554115" title="Перейти в профиль"><h5>Анна</h5></a><span class="onlineStatus-_08b2408e96376dfc" data-marker="header/onlineStatus"></span></div></div><span class="size_s-_3fa85e8f9068ee6a"><a data-marker="header/itemLink" href="/voronezh/garazhi_i_mashinomesta/garazh_30_m_8457554115" class="root-e80bf4537dbf73f0 root_link-e80bf4537dbf73f0"><span elementtiming="msg.channel.item-title" class="subtitle-e80bf4537dbf73f0">Гараж, &gt;&nbsp;30&nbsp;м²</span><span class="itemPrice-e80bf4537dbf73f0">630&nbsp;000 ₽</span></a></span></div></div>`;
+
+const CHAT_BODY_ONLY = `<div class="container-_08b2408e96376dfc container_mini-_08b2408e96376dfc"><div class="wrap-_08b2408e96376dfc"><div class="previewWrap-_08b2408e96376dfc"><div class="root-f4c005339e7b8e05"><a href="/voronezh/garazhi_i_mashinomesta/garazh_30_m_8457554115" target="_blank" data-markers="itemPreview" class="root-cc7042c4dd5ae53f" style="width: 48px; height: 48px; background-image: url(&quot;https://c70.img.avito.st/image/1/1.K4kaqLaxh2A0CVdjQKgUqBwIhWCoHYNi.DCINM1PPFRs&quot;); background-size: cover;"></a></div></div>${CHAT_INFO_WRAP_INNER}<div class="chatButtons-_08b2408e96376dfc"></div></div></div>`;
+
+const CHAT_HEADER_HTML = `<!DOCTYPE html><html><body>${CHAT_BODY_ONLY}</body></html>`;
+
+// Страница объявления №8457554115 + поверх неё открытый всплывающий чат
+// по этому же объявлению — обе панели должны жить одновременно.
+const ITEM_PAGE_30_HTML = `<!DOCTYPE html><html><body>
+<div class="js-item-view-title-info"><h1 data-marker="item-view/title-info">Гараж, 30&nbsp;м²</h1>
+  <div><span id="bx_item-price-value"><span data-marker="item-view/item-price">630&nbsp;000&nbsp;₽</span></span></div>
+</div>
+<div class="js-item-view-main">
+  <div id="bx_item-gallery" data-marker="item-view/main-gallery"><img src="https://b00.img.avito.st/image/1/item30.jpg"></div>
+  <div id="bx_item-description"><div data-marker="item-view/item-description"><p>Продам гараж.</p></div></div>
+</div>`;
+
 let passed = 0;
 async function runTest(name, fn) {
   try {
@@ -386,6 +407,112 @@ async function main() {
     const note = env.getStored()['111222333'];
     assert.strictEqual(note.link, 'https://www.avito.ru/111222333',
       'должен сохраниться прямой адрес объявления, а не ссылка выдачи/поиска');
+  });
+
+  /* ---------------- Всплывающий чат, прикреплённый к объявлению ---------------- */
+  console.log('\nшапка всплывающего чата (мини-мессенджер):');
+
+  await runTest('при наличии ссылки на объявление в шапке чата появляется панель', async () => {
+    const env = makeEnv({
+      url: 'https://www.avito.ru/voronezh/garazhi_i_mashinomesta/garazh_30_m_8457554115',
+      html: CHAT_HEADER_HTML,
+    });
+    await tick(env.window);
+    const panel = env.window.document.querySelector('.an-panel--chat');
+    assert.ok(panel, 'панель в шапке чата не найдена');
+    assert.strictEqual(panel.dataset.itemId, '8457554115');
+    assert.strictEqual(panel.querySelectorAll('.an-btn').length, 3, 'нет трёх кнопок-статусов');
+    assert.ok(panel.querySelector('.an-note-chip'), 'нет чипа заметки');
+    assert.strictEqual(panel.querySelector('.an-note-chip').textContent, '+');
+    assert.ok(!panel.querySelector('.an-del-btn'), 'в компактной панели чата ✕ быть не должно');
+    // Панель — внутри infoWrap шапки чата.
+    assert.ok(env.window.document
+      .querySelector('[class*="infoWrap-_"]').contains(panel), 'панель не в шапке чата');
+  });
+
+  await runTest('клик по статусу в чате сохраняет метаданные из шапки чата', async () => {
+    const env = makeEnv({
+      url: 'https://www.avito.ru/moskva?q=что-угодно', // под модалкой — поиск, данных объявления нет
+      html: CHAT_HEADER_HTML,
+    });
+    await tick(env.window);
+    env.window.document
+      .querySelector('.an-panel--chat .an-btn[data-emoji="✅"]').click();
+    await tick(env.window);
+    const note = env.getStored()['8457554115'];
+    assert.ok(note, 'заметка не сохранена');
+    assert.strictEqual(note.emoji, '✅');
+    assert.match(note.title, /Гараж/);
+    assert.match(note.price, /630\s*000/u);
+    assert.strictEqual(note.link, 'https://www.avito.ru/8457554115');
+    // Картинка взята из превью объявления в шапке чата.
+    assert.match(note.img, /avito\.st\/image/u);
+  });
+
+  await runTest('заметка из чата видна на панели страницы объявления и наоборот (патч обоих панелей)', async () => {
+    const env = makeEnv({
+      url: 'https://www.avito.ru/voronezh/garazhi_i_mashinomesta/garazh_30_m_8457554115',
+      html: ITEM_PAGE_30_HTML + '\n' + CHAT_BODY_ONLY,
+    });
+    await tick(env.window);
+    const itemPanel = env.window.document.querySelector('.an-panel--item');
+    const chatPanel = env.window.document.querySelector('.an-panel--chat');
+    assert.ok(itemPanel && chatPanel, 'обе панели должны присутствовать');
+    chatPanel.querySelector('.an-btn[data-emoji="❌"]').click();
+    await tick(env.window);
+    assert.ok(itemPanel.querySelector('.an-btn--active'), 'панель объявления не отразила статус из чата');
+    assert.strictEqual(itemPanel.querySelector('.an-btn--active').dataset.emoji, '❌');
+  });
+
+  await runTest('чат без ссылки на объявление — панель не появляется', async () => {
+    const env = makeEnv({
+      url: 'https://www.avito.ru/profile/messenger',
+      html: '<!DOCTYPE html><html><body><div class="infoWrap-_08b2"><span class="name-_08b2">Иван</span></div></body></html>',
+    });
+    await tick(env.window);
+    assert.ok(!env.window.document.querySelector('.an-panel--chat'),
+      'у обычного чата без объявления панели быть не должно');
+  });
+
+  await runTest('перемонтирование шапки React — панель чата восстанавливается без дублей', async () => {
+    const env = makeEnv({
+      url: 'https://www.avito.ru/profile/messenger',
+      html: CHAT_HEADER_HTML,
+    });
+    const { window } = env;
+    const { document } = window;
+    await tick(window);
+    assert.ok(document.querySelector('.an-panel--chat'));
+
+    // Эмуляция ре-рендера: infoWrap заменён новым поддеревом (панель выпала).
+    const oldWrap = document.querySelector('[class*="infoWrap-_"]');
+    const parent = oldWrap.parentElement;
+    const fresh = document.createElement('div');
+    fresh.innerHTML = CHAT_INFO_WRAP_INNER;
+    parent.replaceChild(fresh.firstElementChild, oldWrap);
+
+    await tick(window, 400); // debounce observer
+    const panels = document.querySelectorAll('.an-panel--chat');
+    assert.strictEqual(panels.length, 1, 'дубль или потеря панели после перемонтажа шапки');
+    assert.strictEqual(panels[0].dataset.itemId, '8457554115');
+  });
+
+  await runTest('модалка заметки открывается из чата и текст сохраняется', async () => {
+    const env = makeEnv({
+      url: 'https://www.avito.ru/profile/messenger',
+      html: CHAT_HEADER_HTML,
+    });
+    await tick(env.window);
+    env.window.document.querySelector('.an-panel--chat .an-note-chip').click();
+    const modal = env.window.document.querySelector('.an-modal');
+    assert.ok(modal, 'модалка не открылась из чата');
+    modal.querySelector('.an-modal__textarea').value = 'торг уместен';
+    modal.querySelector('.an-modal__btn--save').click();
+    await tick(env.window);
+    assert.strictEqual(env.getStored()['8457554115'].text, 'торг уместен');
+    const chip = env.window.document.querySelector('.an-panel--chat .an-note-chip');
+    assert.ok(chip.textContent.includes('торг'), 'чип чата не показывает превью заметки');
+    assert.ok(chip.classList.contains('an-note-chip--has'), 'чип не подсвечен как существующая заметка');
   });
 
   console.log(`\n${passed} проверок пройдено.`);

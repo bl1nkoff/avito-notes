@@ -24,6 +24,12 @@
  *     js-* классы сохраняются. Панель вставляется СОСЕДОМ к якорю (после h1),
  *     а не внутрь него, и перед каждой вставкой проверяется, что она всё ещё
  *     в DOM — React может перестроить дерево в течение жизни страницы.
+ *  6. Всплывающий чат (мини-мессенджер), прикреплённый к объявлению: если в
+ *     шапке чата рядом с именем продавца есть ссылка на объявление
+ *     (a[data-marker="header/itemLink"]), под ней рисуется компактная панель
+ *     статусов/заметки; метаданные для заметки берутся из самой шапки чата
+ *     (название и цена в ссылке itemLink, картинка из превью), а не со
+ *     страницы под модалкой.
  */
 (function () {
   'use strict';
@@ -52,6 +58,13 @@
     { selector: '#item-description', mode: 'append' },
     { selector: '[data-marker="item-view/item-description"]', mode: 'append' },
   ];
+
+  // Шапка всплывающего чата (мини-мессенджер, прикреплённый к объявлению):
+  // рядом с именем продавца есть ссылка на объявление —
+  //   <a data-marker="header/itemLink" href="/.../garazh_30_m_8457554115">…</a>
+  // По её наличию определяем такой чат и рисуем в шапке компактную панель.
+  // Селекторы хеш-классов не используем — они меняются от сборки к сборке.
+  const CHAT_HEADER_ITEM_LINK = 'a[data-marker="header/itemLink"][href]';
 
   // Признаки страницы объявления в DOM. URL ненадёжен: актуальный адрес
   // объявления — /voronezh/garazhi_i_mashinomesta/garazh_20_m_8093949601,
@@ -287,38 +300,10 @@
   function patchPanel(panel, id) {
     const note = notesCache[id];
     panel.dataset.itemId = id;
-    panel.innerHTML = panelHtml(id, note);
-    bindPanelEvents(panel, id);
-  }
-
-  function bindPanelEvents(panel, id) {
-    panel.querySelectorAll('.an-btn').forEach((btn) => {
-      btn.addEventListener('click', (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        const emoji = btn.dataset.emoji;
-        const current = notesCache[id]?.emoji;
-        const container = findHostCard(id) || document.body;
-        // Снимаем статус: если текст пустой, persistNote удалит заметку целиком
-        // (пустые заметки не храним).
-        persistNote(id, { ...extractData(container, id), emoji: current === emoji ? null : emoji });
-        patchAllForId(id);
-      });
-    });
-
-    panel.querySelector('.an-note-chip')?.addEventListener('click', (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      openNoteModal(id);
-    });
-
-    // Удаление заметки прямо из панели (без открытия модалки).
-    panel.querySelector('.an-del-btn')?.addEventListener('click', (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      deleteNote(id);
-      patchAllForId(id);
-    });
+    // Чат-панель компактнее (без ✕) — свой рендер.
+    panel.innerHTML = panel.classList.contains('an-panel--chat')
+      ? chatPanelHtml(note)
+      : panelHtml(id, note);
   }
 
   function patchAllForId(id) {
@@ -416,10 +401,13 @@
 
   function createPanel(id, variant) {
     const panel = document.createElement('div');
-    panel.className = 'an-panel' + (variant === 'item' ? ' an-panel--item' : '');
+    panel.className = 'an-panel' +
+      (variant === 'item' ? ' an-panel--item' : variant === 'chat' ? ' an-panel--chat' : '');
     panel.dataset.itemId = id;
-    panel.innerHTML = panelHtml(id, notesCache[id]);
-    bindPanelEvents(panel, id);
+    // Чат-панель компактнее (без ✕) — свой рендер.
+    panel.innerHTML = variant === 'chat'
+      ? chatPanelHtml(notesCache[id])
+      : panelHtml(id, notesCache[id]);
     return panel;
   }
 
@@ -504,10 +492,131 @@
     });
   }
 
+  /* ---------------- Всплывающий чат (мини-мессенджер) ---------------- */
+
+  // Все шапки чатов, в которых рядом с именем продавца есть ссылка на
+  // объявление (data-marker="header/itemLink"). Так отличаем чат,
+  // прикреплённый к объявлению, от обычных переписок.
+  function findChatHeaders() {
+    const result = [];
+    document.querySelectorAll(CHAT_HEADER_ITEM_LINK).forEach((link) => {
+      const id = getItemIdFromUrl(link.href);
+      if (!id) return;
+      // Контейнер вставки — вся шапка чата: infoWrap (классы хеш-сборки),
+      // иначе ближайший ancestor с wrap-, иначе родитель блока ссылки.
+      const header =
+        link.closest('[class*="infoWrap"]') ||
+        link.closest('[class*="wrap-"]') ||
+        link.closest('[class*="container-"]') ||
+        link.parentElement;
+      if (header) result.push({ header, link, id });
+    });
+    return result;
+  }
+
+  // Данные объявления берутся прямо из шапки чата (название + цена в ссылке
+  // itemLink), а не со страницы под модалкой: под всплывающим чатом может
+  // быть любая страница (поиск/каталог), где этих данных нет.
+  function extractChatData(link, id) {
+    const titleEl = link.querySelector('.subtitle-e80bf4537dbf73f0') ||
+      // запасной вариант по стабильному elementtiming (хеш-классы меняются)
+      link.querySelector('[elementtiming="msg.channel.item-title"]');
+    const priceEl = link.querySelector('[class*="itemPrice"]');
+    const clean = (s) => String(s || '').replace(/\u00a0/g, ' ').trim();
+    const img =
+      link
+        .closest('[class*="container"]')
+        ?.querySelector('[data-markers="itemPreview"][style*="background-image"]')
+        ?.getAttribute('style')
+        ?.match(/url\("?([^")]+)"?\)/)?.[1] || '';
+    return {
+      title: clean(titleEl?.textContent) || 'Без названия',
+      price: clean(priceEl?.textContent) || 'Цена не указана',
+      link: buildItemLink(id),
+      img,
+      coords: null,
+    };
+  }
+
+  // Компактная панель в шапке чата: только статусы и чип заметки (без ✕ —
+  // удаление доступно в модалке и на основной панели объявления).
+  function chatPanelHtml(note) {
+    const exists = hasNote(note);
+    const preview = note?.text
+      ? note.text.slice(0, PREVIEW_LEN) + (note.text.length > PREVIEW_LEN ? '…' : '')
+      : '';
+    const buttons = EMOJIS.map(
+      (e) =>
+        `<button class="an-btn${note?.emoji === e ? ' an-btn--active' : ''}"` +
+        ` data-emoji="${e}" type="button" title="Статус ${e}">${e}</button>`
+    ).join('');
+    const chipLabel = exists ? (preview || `${note.emoji}`) : '+';
+    const chipCls = exists ? 'an-note-chip an-note-chip--has' : 'an-note-chip';
+    const chipTitle = exists
+      ? escapeAttr(`Заметка: ${note.text || '(без текста)'}`)
+      : 'Добавить заметку';
+    return buttons + `<span class="${chipCls}" title="${chipTitle}">${escapeHtml(chipLabel)}</span>`;
+  }
+
+  // Единый обработчик кликов панелей через делегирование на document:
+  // работает и для новых панелей (чат может появиться в любой момент),
+  // и после перемонтажа шапки React без перепривязки слушателей.
+  // id берётся из dataset панели, поэтому корректен даже если панель
+  // переиспользована под другое объявление.
+  function onPanelClick(e) {
+    const panel = e.target.closest?.('.an-panel');
+    if (!panel) return;
+    const id = panel.dataset.itemId;
+    if (!id) return;
+
+    const btn = e.target.closest('.an-btn');
+    const chip = !btn && e.target.closest('.an-note-chip');
+    const del = !btn && !chip && e.target.closest('.an-del-btn');
+    if (!btn && !chip && !del) return;
+
+    e.preventDefault();
+    e.stopPropagation();
+
+    if (btn) {
+      const emoji = btn.dataset.emoji;
+      const current = notesCache[id]?.emoji;
+      // Метаданные: для чата — из шапки чата (под модалкой может быть любая
+      // страница), иначе — с карточки/страницы объявления.
+      const chatLink = panel.classList.contains('an-panel--chat')
+        ? panel.parentElement?.querySelector(CHAT_HEADER_ITEM_LINK)
+        : null;
+      const data = chatLink
+        ? extractChatData(chatLink, id)
+        : extractData(findHostCard(id) || document.body, id);
+      persistNote(id, { ...data, emoji: current === emoji ? null : emoji });
+      patchAllForId(id);
+    } else if (chip) {
+      openNoteModal(id);
+    } else if (del) {
+      deleteNote(id);
+      patchAllForId(id);
+    }
+  }
+
+  document.addEventListener('click', onPanelClick, true);
+
+  // Расставить компактные панели по шапкам всплывающих чатов.
+  function injectChatPanels() {
+    findChatHeaders().forEach(({ header, id }) => {
+      // Уже есть панель этого объявления в этой шапке — не трогаем
+      // (обработчики делегированы, перепривязка не нужна).
+      const existing = header.querySelector(':scope > .an-panel--chat');
+      if (existing && existing.dataset.itemId === id) return;
+      if (existing) existing.remove(); // id изменился (шапка переиспользована под другой чат)
+      header.appendChild(createPanel(id, 'chat'));
+    });
+  }
+
   function init() {
     try {
       injectListPanels();
       injectItemPanel();
+      injectChatPanels();
     } catch (e) {
       console.error('[Avito Notes] Ошибка в init:', e);
     }
