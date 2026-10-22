@@ -1,9 +1,14 @@
 /* Avito Notes — popup: поиск, фильтрация и сортировка заметок.
  * Источник данных — chrome.storage.local (тот же ключ, что использует content.js).
+ * Заметки-эмодзи хранятся массивом строк `emojis` (множественный выбор);
+ * легаси-строка `emoji` читается через noteEmojis().
  */
 'use strict';
 
 const STORAGE_KEY = 'avito_notes_v1';
+// Набор заметок — тот же порядок, что в content.js (используется для
+// фильтра в popup и канонической сортировки эмодзи в записи).
+const EMOJIS = ['✅', '❌', '❓', '🛠️', '🕒'];
 
 // В popup-окне расширения `chrome` всегда определён; заглушка нужна только
 // для авто-запуска скрипта вне браузера (например, require() в тестах).
@@ -40,6 +45,60 @@ function escapeHtml(s) {
     ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 }
 
+// Для атрибутов: то же + перевод строк в пробелы (перенос в атрибуте ломает разметку).
+function escapeAttr(s) {
+  return escapeHtml(s).replace(/\n/g, ' ');
+}
+
+/* ---------------- Заметки-эмодзи (множественный выбор) ---------------- */
+
+// Эмодзи заметки всегда массив строк: новый формат `emojis`, легаси-строка
+// `emoji` или отсутствующее поле -> []. Дубликаты убираются, порядок —
+// канонический (по набору EMOJIS), неизвестные — в конце.
+function noteEmojis(note) {
+  if (!note) return [];
+  const raw = Array.isArray(note.emojis) ? note.emojis : note.emoji ? [note.emoji] : [];
+  const set = new Set(raw.map((e) => String(e)).filter(Boolean));
+  const ordered = EMOJIS.filter((e) => set.has(e));
+  [...set].forEach((e) => {
+    if (!EMOJIS.includes(e)) ordered.push(e);
+  });
+  return ordered;
+}
+
+/* ---------------- Дата/время ---------------- */
+
+// Часы «HH:mm» с ведущим нулём: ru-локаль даёт «9:05», а нужен «13:20».
+function formatTime24(date) {
+  const h = String(date.getHours()).padStart(2, '0');
+  const m = String(date.getMinutes()).padStart(2, '0');
+  return `${h}:${m}`;
+}
+
+// «D MMM YY» из локальных частей Intl (язык по умолчанию — с устройства):
+// берём day/month/year через formatToParts и склеиваем в нужном порядке —
+// так не зависят от мусора локали («2 янв. 26 г.» -> «2 янв 26») и от
+// перестановки («Jan 2, 26» тоже становится «2 Jan 26»). Точки сокращений
+// убираем, две цифры года оставляем как есть.
+function formatDateShort(date) {
+  const parts = new Intl.DateTimeFormat(undefined, {
+    day: 'numeric',
+    month: 'short',
+    year: '2-digit',
+  }).formatToParts(date);
+  const get = (type) => (parts.find((p) => p.type === type) || {}).value || '';
+  const day = get('day');
+  const month = get('month').replace(/\./g, '').trim();
+  const year = get('year');
+  return `${day} ${month} ${year}`.trim();
+}
+
+// Итоговый формат времени заметки: «HH:mm, D MMM YY» — например «13:20, 2 янв 26».
+function formatNoteDateTime(ts) {
+  const date = new Date(ts || Date.now());
+  return `${formatTime24(date)}, ${formatDateShort(date)}`;
+}
+
 function compareByPrice(a, b, dir) {
   const pa = parsePrice(a.price);
   const pb = parsePrice(b.price);
@@ -66,7 +125,9 @@ function filterNotes(notes, { search, emojiFilter }) {
       !search ||
       (note.title || '').toLowerCase().includes(search) ||
       (note.text || '').toLowerCase().includes(search);
-    const matchEmoji = !emojiFilter || note.emoji === emojiFilter;
+    // Множественный выбор: фильтр по одному эмодзи совпадает, если заметка
+    // содержит его в наборе.
+    const matchEmoji = !emojiFilter || noteEmojis(note).includes(emojiFilter);
     return matchSearch && matchEmoji;
   });
 }
@@ -103,15 +164,25 @@ function itemUrlFromId(id) {
 }
 
 function noteItemHtml(note) {
+  // Фото первого изображения объявления (поле `img` пишет content.js: галерея
+  // страницы, картинка карточки выдачи или превью в шапке чата). Старые
+  // заметки без фото рендерятся как раньше — без картинки.
+  const img = note.img
+    ? `<img class="note-img" src="${escapeAttr(note.img)}" alt="" loading="lazy">`
+    : '';
+  const emojis = noteEmojis(note);
   return `
-    <div class="note-title">${escapeHtml(note.emoji || '💬')} ${escapeHtml(note.title)}</div>
-    <div class="note-meta">
-        <span>${escapeHtml(note.price)}</span>
-        <span>${new Date(note.timestamp || Date.now()).toLocaleDateString()} ${new Date(
-          note.timestamp || Date.now()
-        ).toLocaleTimeString()}</span>
-    </div>
-    ${note.text ? `<div class="note-text">${escapeHtml(note.text)}</div>` : ''}` +
+    <div class="note-body">
+      ${img}
+      <div class="note-content">
+        <div class="note-title">${escapeHtml(emojis.join(' ') || '💬')} ${escapeHtml(note.title)}</div>
+        <div class="note-meta">
+            <span>${escapeHtml(note.price)}</span>
+            <span>${escapeHtml(formatNoteDateTime(note.timestamp))}</span>
+        </div>
+        ${note.text ? `<div class="note-text">${escapeHtml(note.text)}</div>` : ''}
+      </div>
+    </div>` +
     // Удаление доступно для каждой заметки списка (клик не открывает объявление).
     `<button class="note-delete" type="button" title="Удалить заметку">✕</button>`;
 }
@@ -202,6 +273,6 @@ if (typeof document !== 'undefined' && document.getElementById('search')) {
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
     parsePrice, escapeHtml, compareByPrice, sortNotes, filterNotes,
-    noteItemHtml, resolveNoteUrl, itemUrlFromId, deleteStoredNote,
+    noteItemHtml, noteEmojis, formatNoteDateTime, resolveNoteUrl, itemUrlFromId, deleteStoredNote,
   };
 }

@@ -10,6 +10,10 @@ input, select { width: 100%; padding: 8px; border: 1px solid #ddd; border-radius
 input:focus, select:focus { border-color: #007aff; }
 .note-item { border-bottom: 1px solid #f0f0f0; padding: 10px 0; cursor: pointer; transition: background 0.2s; position: relative; }
 .note-item:hover { background: #f9f9f9; }
+.note-body { display: flex; gap: 10px; align-items: flex-start; padding-right: 22px; }
+.note-content { flex: 1; min-width: 0; }
+/* Фото первого изображения объявления (поле img пишет content.js). */
+.note-img { width: 64px; height: 64px; object-fit: cover; border-radius: 8px; flex: 0 0 auto; background: #eee; }
 .note-delete { position: absolute; top: 8px; right: 4px; border: none; background: none; color: #c0392b; font-size: 14px; line-height: 1; padding: 4px 6px; border-radius: 4px; cursor: pointer; opacity: 0; transition: opacity 0.15s, background 0.15s; }
 .note-item:hover .note-delete { opacity: 0.7; }
 .note-delete:hover { opacity: 1 !important; background: #fdecea; }
@@ -31,6 +35,8 @@ input:focus, select:focus { border-color: #007aff; }
           <option value="✅">✅ Галочка</option>
           <option value="❌">❌ Крестик</option>
           <option value="❓">❓ Вопрос</option>
+          <option value="🛠️">🛠️ В ремонте / торг</option>
+          <option value="🕒">🕒 Ожидание / отложено</option>
         </select>
         <select id="sortBy">
           <option value="timestamp_desc">Сначала новые</option>

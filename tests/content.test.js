@@ -121,7 +121,12 @@ async function main() {
     const panel = window.document.querySelector('.an-panel--item');
     assert.ok(panel, 'панель не найдена');
     assert.strictEqual(panel.dataset.itemId, '8093949601');
-    assert.strictEqual(panel.querySelectorAll('.an-btn').length, 3, 'нет трёх кнопок-статусов');
+    // Набор из 5 эмодзи: ✅ ❌ ❓ 🛠️ 🕒 (множественный выбор).
+    assert.strictEqual(panel.querySelectorAll('.an-btn').length, 5, 'нет пяти кнопок-статусов');
+    assert.deepStrictEqual(
+      [...panel.querySelectorAll('.an-btn')].map((b) => b.dataset.emoji),
+      ['✅', '❌', '❓', '🛠️', '🕒']
+    );
     assert.ok(panel.querySelector('.an-note-chip'), 'нет чипа заметки');
     // Заметки ещё нет — чип показывает лаконичное «добавить заметку»,
     // кнопки удаления быть не должно.
@@ -151,14 +156,46 @@ async function main() {
     await tick(env.window);
     const note = env.getStored()['8093949601'];
     assert.ok(note, 'заметка не сохранена');
-    assert.strictEqual(note.emoji, '✅');
+    // Под капотом — массив строк `emojis` (легаси-строка `emoji` не пишется).
+    assert.deepStrictEqual(note.emojis, ['✅']);
+    assert.ok(!('emoji' in note), 'поле emoji не должно записываться');
     assert.match(note.title, /Гараж, 20/);
     assert.match(note.price, /620\s*000/u);
     assert.strictEqual(note.link, 'https://www.avito.ru/8093949601');
     assert.deepStrictEqual(note.coords, { lat: '51.627068', lon: '39.18012' });
+    // Фото первого изображения объявления сохраняется в поле img.
+    assert.match(note.img, /avito\.st\/image\/1\/example\.jpg/u);
     // UI обновился: кнопка стала активной
     const active = env.window.document.querySelectorAll('.an-panel--item .an-btn--active');
     assert.strictEqual(active.length, 1);
+  });
+
+  await runTest('множественный выбор: несколько эмодзи хранятся массивом', async () => {
+    const env = makeEnv({
+      url: 'https://www.avito.ru/voronezh/garazhi_i_mashinomesta/garazh_20_m_8093949601',
+      html: ITEM_PAGE_HTML,
+    });
+    await tick(env.window);
+    // Перебор по dataset, а не css-селектор [data-emoji="…"]: составной
+    // emoji с variation selector (🛠️ = U+1F6E0 U+FE0F) им не матчится.
+    const q = (e) => [...env.window.document.querySelectorAll('.an-panel--item .an-btn')]
+      .find((b) => b.dataset.emoji === e);
+    q('🛠️').click();
+    await tick(env.window);
+    q('🕒').click();
+    await tick(env.window);
+    q('✅').click();
+    await tick(env.window);
+    const note = env.getStored()['8093949601'];
+    // Порядок — канонический по набору EMOJIS, а не по кликам.
+    assert.deepStrictEqual(note.emojis, ['✅', '🛠️', '🕒']);
+    const active = [...env.window.document.querySelectorAll('.an-panel--item .an-btn--active')]
+      .map((b) => b.dataset.emoji);
+    assert.deepStrictEqual(active, ['✅', '🛠️', '🕒'], 'активны должны быть все выбранные');
+    // Клик по активному убирает только его, остальные остаются.
+    q('🛠️').click();
+    await tick(env.window);
+    assert.deepStrictEqual(env.getStored()['8093949601'].emojis, ['✅', '🕒']);
   });
 
     await runTest('повторный клик по активному статусу снимает его', async () => {
@@ -170,7 +207,7 @@ async function main() {
     const sel = '.an-panel--item .an-btn[data-emoji="❌"]';
     env.window.document.querySelector(sel).click();
     await tick(env.window);
-    assert.strictEqual(env.getStored()['8093949601'].emoji, '❌');
+    assert.deepStrictEqual(env.getStored()['8093949601'].emojis, ['❌']);
     // Второй клик без текста удалил бы пустую заметку целиком (см. отдельный
     // тест) — добавим текст, чтобы проверить именно «переключение» статуса.
     env.window.document.querySelector('.an-panel--item .an-note-chip').click();
@@ -181,7 +218,8 @@ async function main() {
     env.window.document.querySelector(sel).click();
     await tick(env.window);
     const note = env.getStored()['8093949601'];
-    assert.strictEqual(note.emoji, null, 'статус должен сняться');
+    assert.deepStrictEqual(note.emojis, [], 'статус должен сняться');
+    assert.ok(!('emoji' in note), 'легаси-поле emoji не должно появляться');
     assert.strictEqual(note.text, 'заметка есть', 'заметка с текстом остаётся в хранилище');
   });
 
@@ -367,7 +405,8 @@ async function main() {
     modal.querySelector('.an-modal__btn--save').click();
     await tick(env.window);
     const note = env.getStored()['8093949601'];
-    assert.ok(note && note.emoji === '❓', 'заметка со статусом сохраняется даже без текста');
+    assert.ok(note && Array.isArray(note.emojis) && note.emojis.includes('❓'),
+      'заметка со статусом сохраняется даже без текста');
     assert.strictEqual(note.text, '');
   });
 
@@ -421,7 +460,7 @@ async function main() {
     const panel = env.window.document.querySelector('.an-panel--chat');
     assert.ok(panel, 'панель в шапке чата не найдена');
     assert.strictEqual(panel.dataset.itemId, '8457554115');
-    assert.strictEqual(panel.querySelectorAll('.an-btn').length, 3, 'нет трёх кнопок-статусов');
+    assert.strictEqual(panel.querySelectorAll('.an-btn').length, 5, 'нет пяти кнопок-статусов');
     assert.ok(panel.querySelector('.an-note-chip'), 'нет чипа заметки');
     assert.strictEqual(panel.querySelector('.an-note-chip').textContent, '+');
     assert.ok(!panel.querySelector('.an-del-btn'), 'в компактной панели чата ✕ быть не должно');
@@ -441,7 +480,7 @@ async function main() {
     await tick(env.window);
     const note = env.getStored()['8457554115'];
     assert.ok(note, 'заметка не сохранена');
-    assert.strictEqual(note.emoji, '✅');
+    assert.deepStrictEqual(note.emojis, ['✅']);
     assert.match(note.title, /Гараж/);
     assert.match(note.price, /630\s*000/u);
     assert.strictEqual(note.link, 'https://www.avito.ru/8457554115');
