@@ -104,13 +104,13 @@
   }
 
   // Ссылка на само объявление — канонический адрес по id, а не URL страницы,
-  // с которой заметка была сделана. На выдаче Авито ссылка вида /item/<id>
-  // ведёт через «загрузочный» редирект (в т.ч. на поиск), поэтому храним
-  // прямой адрес объявления: Авито сам разворачивает его в актуальный
-  // канонический URL (город/категория/slug_<id>).
+  // с которой заметка была сделана. Формат — https://www.avito.ru/<id>:
+  // вариант /item/<id> Авито не открывает (редиректит/не находит), а по
+  // «голым» цифрам в корне работает корректно — сервис сам разворачивает
+  // адрес в актуальную страницу (город/категория/slug_<id>).
   function buildItemLink(id) {
     if (!id) return '';
-    return `https://www.avito.ru/item/${encodeURIComponent(id)}`;
+    return `https://www.avito.ru/${encodeURIComponent(id)}`;
   }
 
   // Синхронизация между вкладками/popup: перечитываем кэш и обновляем панели.
@@ -233,19 +233,39 @@
 
   /* ---------------- Рендер панели ---------------- */
 
+  // Есть ли у объявления заметка (статус и/или текст) — по этому же критерию
+  // persistNote решает, хранить запись или удалить её.
+  function hasNote(note) {
+    return !!(note && (note.emoji || String(note.text || '').trim()));
+  }
+
   function panelHtml(id, note) {
+    const exists = hasNote(note);
     const preview = note?.text
       ? note.text.slice(0, PREVIEW_LEN) + (note.text.length > PREVIEW_LEN ? '…' : '')
-      : '💬 Заметка';
+      : '';
     const buttons = EMOJIS.map(
       (e) =>
         `<button class="an-btn${note?.emoji === e ? ' an-btn--active' : ''}"` +
         ` data-emoji="${e}" type="button" title="Статус ${e}">${e}</button>`
     ).join('');
-    return (
+    // Чип: если заметки нет — лаконичное «+ Заметка»; если есть — превью
+    // текста (или статус, когда текста нет), чтобы по панели было видно,
+    // что заметка существует и что в ней.
+    const chipLabel = exists ? (preview || `💬 ${note.emoji}`) : '+ Заметка';
+    const chipCls = exists ? 'an-note-chip an-note-chip--has' : 'an-note-chip';
+    const chipTitle = exists
+      ? escapeAttr(`Заметка: ${note.text || '(без текста)'}`)
+      : 'Добавить заметку';
+    let html =
       buttons +
-      `<span class="an-note-chip" title="${escapeAttr(note?.text || '')}">${escapeHtml(preview)}</span>`
-    );
+      `<span class="${chipCls}" title="${chipTitle}">${escapeHtml(chipLabel)}</span>`;
+    // Удаление доступно прямо в панели — только когда заметка реально есть.
+    if (exists) {
+      html +=
+        '<button class="an-del-btn" type="button" title="Удалить заметку">✕</button>';
+    }
+    return html;
   }
 
   function escapeHtml(s) {
@@ -290,6 +310,14 @@
       e.preventDefault();
       e.stopPropagation();
       openNoteModal(id);
+    });
+
+    // Удаление заметки прямо из панели (без открытия модалки).
+    panel.querySelector('.an-del-btn')?.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      deleteNote(id);
+      patchAllForId(id);
     });
   }
 
@@ -338,11 +366,11 @@
     modal.className = 'an-modal';
     modal.innerHTML = `
       <div class="an-modal__box">
-        <h3 class="an-modal__title">Заметка</h3>
+        <h3 class="an-modal__title">${note ? 'Заметка' : 'Добавить заметку'}</h3>
         <textarea class="an-modal__textarea" placeholder="Текст заметки…"></textarea>
         <div class="an-modal__actions">
           <button class="an-modal__btn an-modal__btn--cancel" type="button">Отмена</button>
-          <button class="an-modal__btn an-modal__btn--delete" type="button">Удалить</button>
+          ${note ? '<button class="an-modal__btn an-modal__btn--delete" type="button">Удалить</button>' : ''}
           <button class="an-modal__btn an-modal__btn--save" type="button">Сохранить</button>
         </div>
       </div>`;
@@ -373,11 +401,12 @@
       close();
     };
 
-    modal.querySelector('.an-modal__btn--delete').onclick = () => {
+    // Кнопка «Удалить» есть только когда заметка уже существует.
+    modal.querySelector('.an-modal__btn--delete')?.addEventListener('click', () => {
       deleteNote(id);
       patchAllForId(id);
       close();
-    };
+    });
 
     document.body.appendChild(modal);
     textarea.focus();

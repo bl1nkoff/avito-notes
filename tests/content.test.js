@@ -102,6 +102,10 @@ async function main() {
     assert.strictEqual(panel.dataset.itemId, '8093949601');
     assert.strictEqual(panel.querySelectorAll('.an-btn').length, 3, 'нет трёх кнопок-статусов');
     assert.ok(panel.querySelector('.an-note-chip'), 'нет чипа заметки');
+    // Заметки ещё нет — чип показывает лаконичное «добавить заметку»,
+    // кнопки удаления быть не должно.
+    assert.strictEqual(panel.querySelector('.an-note-chip').textContent, '+ Заметка');
+    assert.ok(!panel.querySelector('.an-del-btn'), 'кнопка удаления без заметки');
   });
 
     await runTest('панель вставлена сразу после h1 (не внутрь него)', async () => {
@@ -129,7 +133,7 @@ async function main() {
     assert.strictEqual(note.emoji, '✅');
     assert.match(note.title, /Гараж, 20/);
     assert.match(note.price, /620\s*000/u);
-    assert.strictEqual(note.link, 'https://www.avito.ru/item/8093949601');
+    assert.strictEqual(note.link, 'https://www.avito.ru/8093949601');
     assert.deepStrictEqual(note.coords, { lat: '51.627068', lon: '39.18012' });
     // UI обновился: кнопка стала активной
     const active = env.window.document.querySelectorAll('.an-panel--item .an-btn--active');
@@ -259,6 +263,56 @@ async function main() {
     assert.ok(env.window.document.querySelector('.an-panel--item'), 'панель не появилась после отрисовки SPA');
   });
 
+  /* ---------------- Удаление заметки из панели ---------------- */
+  console.log('\nудаление заметки:');
+
+    await runTest('заметка с текстом: чип показывает превью, есть кнопка ✕; ✕ удаляет запись', async () => {
+    const env = makeEnv({
+      url: 'https://www.avito.ru/voronezh/garazhi_i_mashinomesta/garazh_20_m_8093949601',
+      html: ITEM_PAGE_HTML,
+    });
+    await tick(env.window);
+    // Создаём заметку через модалку.
+    env.window.document.querySelector('.an-panel--item .an-note-chip').click();
+    const modal = env.window.document.querySelector('.an-modal');
+    assert.match(modal.querySelector('.an-modal__title').textContent, /Добавить заметку/);
+    assert.ok(!modal.querySelector('.an-modal__btn--delete'),
+      'в модалке новой заметки кнопки «Удалить» быть не должно');
+    modal.querySelector('.an-modal__textarea').value = 'поторговаться';
+    modal.querySelector('.an-modal__btn--save').click();
+    await tick(env.window);
+    assert.ok(env.getStored()['8093949601'], 'заметка не создана');
+    const panel = env.window.document.querySelector('.an-panel--item');
+    assert.ok(panel.querySelector('.an-note-chip--has'), 'чип не показывает, что заметка существует');
+    assert.ok(panel.querySelector('.an-note-chip').textContent.includes('поторговаться'),
+      'чип должен показывать содержание заметки');
+    const delBtn = panel.querySelector('.an-del-btn');
+    assert.ok(delBtn, 'нет кнопки удаления в панели');
+    delBtn.click();
+    await tick(env.window);
+    assert.strictEqual(env.getStored()['8093949601'], undefined, 'заметка должна удалиться из хранилища');
+    const panelAfter = env.window.document.querySelector('.an-panel--item');
+    assert.ok(!panelAfter.querySelector('.an-del-btn'), 'кнопка удаления должна исчезнуть');
+    assert.strictEqual(panelAfter.querySelector('.an-note-chip').textContent, '+ Заметка',
+      'чип должен вернуться в состояние «добавить заметку»');
+  });
+
+    await runTest('заметка только со статусом: ✕ появляется и удаляет целиком', async () => {
+    const env = makeEnv({
+      url: 'https://www.avito.ru/voronezh/garazhi_i_mashinomesta/garazh_20_m_8093949601',
+      html: ITEM_PAGE_HTML,
+    });
+    await tick(env.window);
+    env.window.document.querySelector('.an-panel--item .an-btn[data-emoji="✅"]').click();
+    await tick(env.window);
+    const panel = env.window.document.querySelector('.an-panel--item');
+    assert.ok(panel.querySelector('.an-del-btn'), 'у заметки со статусом должна быть кнопка удаления');
+    assert.ok(panel.querySelector('.an-note-chip--has'), 'чип должен показывать существование заметки');
+    panel.querySelector('.an-del-btn').click();
+    await tick(env.window);
+    assert.strictEqual(env.getStored()['8093949601'], undefined);
+  });
+
   /* ---------------- Пустые заметки не хранятся ---------------- */
   console.log('\nпустая заметка удаляется автоматически:');
 
@@ -320,7 +374,7 @@ async function main() {
   /* ---------------- Ссылка на объявление с карточки выдачи ---------------- */
   console.log('\nссылка заметки с страницы поиска:');
 
-    await runTest('метка с карточки выдачи сохраняет канонический /item/<id>', async () => {
+    await runTest('метка с карточки выдачи сохраняет канонический /<id>', async () => {
     const env = makeEnv({
       url: 'https://www.avito.ru/moskva/professionnye_instrumenty?q=автомат',
       html: SEARCH_PAGE_HTML,
@@ -330,7 +384,7 @@ async function main() {
     panel.querySelector('.an-btn[data-emoji="✅"]').click();
     await tick(env.window);
     const note = env.getStored()['111222333'];
-    assert.strictEqual(note.link, 'https://www.avito.ru/item/111222333',
+    assert.strictEqual(note.link, 'https://www.avito.ru/111222333',
       'должен сохраниться прямой адрес объявления, а не ссылка выдачи/поиска');
   });
 

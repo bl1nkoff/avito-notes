@@ -47,14 +47,39 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  color: #333;
+  color: #999;
   padding: 4px 8px;
-  background: #f0f0f0;
+  background: transparent;
+  border: 1px dashed #ccc;
   border-radius: 4px;
   font-size: 13px;
 }
 
+/* Заметка существует: чип выделяется, чтобы по панели было видно,
+   что заметка есть и что в ней (превью текста / статус). */
+.an-note-chip--has {
+  color: #333;
+  background: #f0f0f0;
+  border: 1px solid transparent;
+}
+
 .an-note-chip:hover { background: #e4e4e4; }
+
+/* Кнопка удаления заметки прямо из панели */
+.an-del-btn {
+  cursor: pointer;
+  background: none;
+  border: none;
+  color: #c0392b;
+  font-size: 14px;
+  line-height: 1;
+  opacity: 0.55;
+  padding: 4px 6px;
+  border-radius: 4px;
+  transition: opacity 0.15s, background 0.15s;
+}
+
+.an-del-btn:hover { opacity: 1; background: #fdecea; }
 
 /* Модальное окно заметки */
 .an-modal {

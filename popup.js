@@ -74,17 +74,20 @@ function filterNotes(notes, { search, emojiFilter }) {
 // Ссылка, по которой popup открывает объявление при клике на заметку.
 // Заметки, сохранённые до того, как в них начал писаться канонический link
 // (или с устаревшим/редиректным адресом), восстанавливаются по id: Авито
-// разворачивает /item/<id> в актуальную страницу объявления. Иначе клик
-// улетал на страницу поиска — ту, с которой заметка была сделана.
+// разворачивает https://www.avito.ru/<id> в актуальную страницу объявления.
+// Иначе клик улетал на страницу поиска — ту, с которой заметка была сделана.
 function resolveNoteUrl(note) {
   if (!note) return '';
   const link = String(note.link || '');
   if (/^https?:\/\//i.test(link)) {
-    // Старые записи могли сохранить ссылку выдачи вида .../item/<id>
-    // с query-«хвостом» — она ведёт через редирект на поиск. Чистим хвост;
-    // если остались только «голые» цифры — это и есть нужный переход.
+    // Старые записи могли сохранить ссылку вида .../item/<id> или <id>?...
+    // с query-«хвостом» — она ведёт через редирект и Авито её не открывает.
+    // Переводим в рабочий формат /<id>, очищая хвост.
     const clean = link.split('#')[0].split('?')[0];
-    if (/\/item\/\d+$/.test(clean) || /^https?:\/\/[^/]+\/[^/]+\/[^/]+\/[\w~.-]*_\d{5,15}(\.html)?$/i.test(clean)) {
+    const itemId = clean.match(/\/item\/(\d+)$/);
+    if (itemId) return itemUrlFromId(itemId[1]);
+    if (/^https?:\/\/[^/]+\/\d+$/.test(clean)) return clean;
+    if (/^https?:\/\/[^/]+\/[^/]+\/[^/]+\/[\w~.-]*_\d{5,15}(\.html)?$/i.test(clean)) {
       return clean;
     }
     // Неизвестный формат — всё равно надёжнее открыть по id, если он есть.
@@ -96,7 +99,7 @@ function resolveNoteUrl(note) {
 }
 
 function itemUrlFromId(id) {
-  return `https://www.avito.ru/item/${encodeURIComponent(String(id))}`;
+  return `https://www.avito.ru/${encodeURIComponent(String(id))}`;
 }
 
 function noteItemHtml(note) {
@@ -108,7 +111,22 @@ function noteItemHtml(note) {
           note.timestamp || Date.now()
         ).toLocaleTimeString()}</span>
     </div>
-    ${note.text ? `<div class="note-text">${escapeHtml(note.text)}</div>` : ''}`;
+    ${note.text ? `<div class="note-text">${escapeHtml(note.text)}</div>` : ''}` +
+    // Удаление доступно для каждой заметки списка (клик не открывает объявление).
+    `<button class="note-delete" type="button" title="Удалить заметку">✕</button>`;
+}
+
+// Удаление записи из хранилища целиком (тот же ключ, что у content.js).
+// Заодно синхронизируем открытые страницы: они слушают storage.onChanged.
+function deleteStoredNote(id) {
+  if (!id) return Promise.resolve();
+  return new Promise((resolve) => {
+    chrome.storage.local.get([STORAGE_KEY], (data) => {
+      const notes = data[STORAGE_KEY] || {};
+      delete notes[id];
+      chrome.storage.local.set({ [STORAGE_KEY]: notes }, resolve);
+    });
+  });
 }
 
 async function renderNotes() {
@@ -139,6 +157,12 @@ async function renderNotes() {
     item.addEventListener('click', () => {
       const url = resolveNoteUrl(note);
       if (url) chrome.tabs.create({ url });
+    });
+    // Кнопка удаления — внутри карточки: гасим click, чтобы не открылась вкладка.
+    item.querySelector('.note-delete')?.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      await deleteStoredNote(note.id);
+      renderNotes();
     });
     list.appendChild(item);
   }
@@ -178,6 +202,6 @@ if (typeof document !== 'undefined' && document.getElementById('search')) {
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
     parsePrice, escapeHtml, compareByPrice, sortNotes, filterNotes,
-    noteItemHtml, resolveNoteUrl, itemUrlFromId,
+    noteItemHtml, resolveNoteUrl, itemUrlFromId, deleteStoredNote,
   };
 }
