@@ -5,7 +5,7 @@
   "private": true,
   "type": "commonjs",
   "scripts": {
-    "test": "node tests/popup.test.js"
+    "test": "node tests/popup.test.js && node tests/content.test.js"
   },
   "devDependencies": {
     "jsdom": "^29.1.1"

@@ -28,6 +28,7 @@ const {
   sortNotes,
   filterNotes,
   noteItemHtml,
+  resolveNoteUrl,
 } = require('../popup.js');
 
 let passed = 0;
@@ -194,15 +195,59 @@ runTest('рендер в реальном DOM: заголовок безопас
   assert.strictEqual(el.querySelector('b'), null);                    // и не разметка
 });
 
+/* ---------------- resolveNoteUrl ---------------- */
+console.log('\nresolveNoteUrl:');
+runTest('каноническая ссылка объявления используется как есть', () => {
+  assert.strictEqual(
+    resolveNoteUrl({ id: '555', link: 'https://www.avito.ru/item/8093949601' }),
+    'https://www.avito.ru/item/8093949601'
+  );
+});
+runTest('slug-ссылка на объявление из хранилища остаётся ссылкой на объявление', () => {
+  assert.strictEqual(
+    resolveNoteUrl({
+      id: '8093949601',
+      link: 'https://www.avito.ru/voronezh/garazhi_i_mashinomesta/garazh_20_m_8093949601',
+    }),
+    'https://www.avito.ru/voronezh/garazhi_i_mashinomesta/garazh_20_m_8093949601'
+  );
+});
+runTest('старая заметка без ссылки открывается по id объявления', () => {
+  assert.strictEqual(resolveNoteUrl({ id: '123456789' }), 'https://www.avito.ru/item/123456789');
+});
+runTest('ссылка выдачи /item/<id>?... (редирект на поиск) чистится от хвоста', () => {
+  assert.strictEqual(
+    resolveNoteUrl({ id: '777', link: 'https://www.avito.ru/item/8093949601?utm_source=search#' }),
+    'https://www.avito.ru/item/8093949601'
+  );
+});
+runTest('неизвестный URL заметки заменяется адресом по id', () => {
+  assert.strictEqual(
+    resolveNoteUrl({ id: '4242', link: 'javascript:alert(1)' }),
+    'https://www.avito.ru/item/4242'
+  );
+  assert.strictEqual(
+    resolveNoteUrl({ id: '4242', link: 'https://www.avito.ru/somepage?q=x' }),
+    'https://www.avito.ru/item/4242'
+  );
+});
+runTest('нет ни ссылки, ни id -> пустая строка (клик ничего не открывает)', () => {
+  assert.strictEqual(resolveNoteUrl({ title: 'x' }), '');
+  assert.strictEqual(resolveNoteUrl(null), '');
+});
+
 /* ================= Интеграция: popup.js целиком в jsdom + mock chrome ================= */
 (async () => {
   console.log('\npopup.js integration (jsdom + chrome mock):');
 
   const STORAGE_KEY = 'avito_notes_v1';
   const sampleNotes = {
-    '111': { title: 'Диван', text: 'торговаться', price: '300 ₽', emoji: '✅', timestamp: 30, link: 'https://www.avito.ru/divan_111' },
-    '222': { title: 'Холодильник', text: '', price: 'Договорная', emoji: '❌', timestamp: 10, link: 'https://www.avito.ru/holo_222' },
-    '333': { title: 'Кресло <b>крутое</b>', text: 'привоз в пятницу', price: '100 ₽', emoji: '❓', timestamp: 20, link: 'https://www.avito.ru/kreslo_333' },
+    // id в ключах хранилища; link — канонический адрес объявления (как пишет content.js).
+    '111': { title: 'Диван', text: 'торговаться', price: '300 ₽', emoji: '✅', timestamp: 30, link: 'https://www.avito.ru/item/111' },
+    // Старая заметка: ссылка не сохранялась — клик должен восстановить адрес по id.
+    '222': { title: 'Холодильник', text: '', price: 'Договорная', emoji: '❌', timestamp: 10 },
+    // Старая заметка с битой ссылкой на страницу поиска (редирект) — тоже починится по id.
+    '333': { title: 'Кресло <b>крутое</b>', text: 'привоз в пятницу', price: '100 ₽', emoji: '❓', timestamp: 20, link: 'https://www.avito.ru/moskva/search?q=кресло' },
   };
   const createdTabs = [];
   let storageChangeHandler = null;
@@ -276,9 +321,19 @@ runTest('рендер в реальном DOM: заголовок безопас
     await flush();
     assert.deepStrictEqual(titles(), ['❓ Кресло <b>крутое</b>', '✅ Диван', '❌ Холодильник']);
   });
-  await runTest('клик по заметке открывает ссылку объявления', () => {
+  await runTest('клик по заметке открывает само объявление, а не страницу поиска', async () => {
+    createdTabs.length = 0;
+    // Сортировка осталась price_asc: Кресло(333, 100₽), Диван(111, 300₽), Холодильник(222, договорная).
     items()[0].dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true }));
-    assert.ok(createdTabs.length >= 1);
+    assert.deepStrictEqual(createdTabs, ['https://www.avito.ru/item/333'],
+      'заметка со старой ссылкой на поиск должна открыться по id объявления');
+    // Старая заметка без link -> адрес восстанавливается по id.
+    items()[1].dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true }));
+    assert.strictEqual(createdTabs[1], 'https://www.avito.ru/item/111');
+    // Заметка с канонической ссылкой открывается ею же.
+    items()[2].dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true }));
+    assert.strictEqual(createdTabs[2], 'https://www.avito.ru/item/222');
+    assert.ok(!createdTabs.some((u) => u.includes('search')), 'ни одна вкладка не открыла поиск');
   });
   await runTest('storage.onChanged перерисовывает список', async () => {
     assert.ok(storageChangeHandler, 'слушатель изменений зарегистрирован');

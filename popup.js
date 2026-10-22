@@ -18,7 +18,11 @@ if (typeof chrome === 'undefined') {
 function getNotes() {
   return new Promise((resolve) => {
     chrome.storage.local.get([STORAGE_KEY], (data) => {
-      resolve(Object.values(data[STORAGE_KEY] || {}));
+      // id ключа хранилища добавляется к каждой заметке: он нужен, чтобы
+      // восстановить ссылку на объявление у старых записей без link.
+      resolve(
+        Object.entries(data[STORAGE_KEY] || {}).map(([id, note]) => ({ ...note, id }))
+      );
     });
   });
 }
@@ -67,6 +71,34 @@ function filterNotes(notes, { search, emojiFilter }) {
   });
 }
 
+// Ссылка, по которой popup открывает объявление при клике на заметку.
+// Заметки, сохранённые до того, как в них начал писаться канонический link
+// (или с устаревшим/редиректным адресом), восстанавливаются по id: Авито
+// разворачивает /item/<id> в актуальную страницу объявления. Иначе клик
+// улетал на страницу поиска — ту, с которой заметка была сделана.
+function resolveNoteUrl(note) {
+  if (!note) return '';
+  const link = String(note.link || '');
+  if (/^https?:\/\//i.test(link)) {
+    // Старые записи могли сохранить ссылку выдачи вида .../item/<id>
+    // с query-«хвостом» — она ведёт через редирект на поиск. Чистим хвост;
+    // если остались только «голые» цифры — это и есть нужный переход.
+    const clean = link.split('#')[0].split('?')[0];
+    if (/\/item\/\d+$/.test(clean) || /^https?:\/\/[^/]+\/[^/]+\/[^/]+\/[\w~.-]*_\d{5,15}(\.html)?$/i.test(clean)) {
+      return clean;
+    }
+    // Неизвестный формат — всё равно надёжнее открыть по id, если он есть.
+    if (note.id) return itemUrlFromId(note.id);
+    return clean || link;
+  }
+  if (note.id) return itemUrlFromId(note.id);
+  return '';
+}
+
+function itemUrlFromId(id) {
+  return `https://www.avito.ru/item/${encodeURIComponent(String(id))}`;
+}
+
 function noteItemHtml(note) {
   return `
     <div class="note-title">${escapeHtml(note.emoji || '💬')} ${escapeHtml(note.title)}</div>
@@ -101,8 +133,12 @@ async function renderNotes() {
     const item = document.createElement('div');
     item.className = 'note-item';
     item.innerHTML = noteItemHtml(note);
+    // Клик открывает САМО объявление: ссылка берётся из заметки, а для
+    // старых записей (где хранился URL страницы поиска) восстанавливается
+    // по id объявления.
     item.addEventListener('click', () => {
-      if (note.link) chrome.tabs.create({ url: note.link });
+      const url = resolveNoteUrl(note);
+      if (url) chrome.tabs.create({ url });
     });
     list.appendChild(item);
   }
@@ -140,5 +176,8 @@ if (typeof document !== 'undefined' && document.getElementById('search')) {
 
 // Экспорт чистых функций для тестов (в расширении `module` не определён).
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { parsePrice, escapeHtml, compareByPrice, sortNotes, filterNotes, noteItemHtml };
+  module.exports = {
+    parsePrice, escapeHtml, compareByPrice, sortNotes, filterNotes,
+    noteItemHtml, resolveNoteUrl, itemUrlFromId,
+  };
 }
