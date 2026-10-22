@@ -55,8 +55,25 @@
 
 ```text
 avito-notes/
-├── manifest.json      # манифест расширения
-├── content.js         # скрипт для страниц Авито
-├── popup.html         # интерфейс всплывающей панели
-├── popup.js           # логика поиска, фильтрации и сортировки
-└── README.md          # документация
+├── manifest.json       # манифест расширения (Manifest V3)
+├── content.js          # скрипт для страниц Авито (панели заметок)
+├── styles.css          # изолированные стили панелей (префикс .an-)
+├── popup.html          # интерфейс всплывающей панели
+├── popup.js            # логика поиска, фильтрации и сортировки
+├── icons/              # иконки расширения
+├── tests/
+│   └── popup.test.js   # unit + интеграционные тесты popup.js (jsdom)
+├── package.json        # dev-зависимости и npm test
+└── README.md           # документация
+```
+
+---
+
+## Разработка и тесты
+
+```bash
+npm install   # ставит только dev-зависимость jsdom
+npm test      # unit + интеграционные тесты popup.js (jsdom + mock chrome.*)
+```
+
+Тесты не требуют браузера: `popup.js` загружается как CommonJS-модуль (чистые функции), а интеграционная часть выполняет его в jsdom с полным моком `chrome.storage / tabs / scripting`.

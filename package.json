@@ -1,0 +1,13 @@
+{
+  "name": "avito-notes",
+  "version": "1.0.0",
+  "description": "Avito Notes — Chrome MV3 extension: заметки и статусы к объявлениям Авито",
+  "private": true,
+  "type": "commonjs",
+  "scripts": {
+    "test": "node tests/popup.test.js"
+  },
+  "devDependencies": {
+    "jsdom": "^29.1.1"
+  }
+}
