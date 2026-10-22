@@ -47,7 +47,7 @@
   // сколько угодно эмодзи из набора; под капотом хранится массив строк в
   // поле note.emojis (легаси-строка note.emoji читается и мигрируется).
   const EMOJIS = ['✅', '❌', '❓', '🛠️', '🕒'];
-  const PREVIEW_LEN = 16;
+  const PREVIEW_LEN = 64;
 
   /* ---------------- Нормализация заметок ---------------- */
 
@@ -238,6 +238,20 @@
     return null;
   }
 
+  // Ближайший контейнер-объявление (карточка выдачи/избранного или корень
+  // страницы объявления). Нужен, чтобы данные карточки не «уезжали» в чужую
+  // карточку: панель лежит внутри своей карточки, поднимаемся вверх по DOM.
+  // Стартуем с самого узла: у карточек избранного якорь — data-marker на
+  // самой карточке, а не data-item-id на родителе.
+  function findOwnListing(el) {
+    for (let node = el; node && node !== document.body; node = node.parentElement) {
+      const marker = node.getAttribute?.('data-marker') || '';
+      if (/^item-\d+$/.test(marker)) return node; // карточка избранного
+      if (node.hasAttribute?.('data-item-id')) return node; // карточка выдачи
+    }
+    return null;
+  }
+
   // Фото первого изображения объявления. Надёжный источник на странице
   // объявления — галерея (#bx_item-gallery / data-marker main-gallery),
   // т.к. разметка с itemprop="image" в новых сборках отсутствует, а общий
@@ -281,7 +295,25 @@
   // строится на само объявление (buildItemLink), а не наследуется от адреса,
   // с которого заметка была сделана (иначе клик в popup открывал поиск).
   function extractData(container, id) {
-    const root = container && container !== document.body ? container : document;
+    let root = container && container !== document.body ? container : document;
+    // Если контейнер — внутренности карточки (колонка, текст), поднимаемся до
+    // самой карточки: иначе заголовок/цена найдутся в ЧУЖОЙ первой карточке.
+    if (root !== document) {
+      const own = findOwnListing(root);
+      if (own) root = own;
+    }
+    // Карточка страницы избранного: у неё нет data-item-id, id — в атрибуте
+    // data-marker="item-<id>" самой карточки. Если контейнер уже поднялся до
+    // чужой карточки выдачи (или вообще ничего не нашёл), ищем карточку по
+    // якорю href именно нашего объявления — так метаданные не «уезжают» в
+    // первую попавшуюся карточку страницы.
+    if (id && !root.querySelector(`a[href*="_${id}"]`)) {
+      const ownLink = [...document.querySelectorAll('a[href]')].find(
+        (a) => getItemIdFromUrl(a.getAttribute('href') || '') === id
+      );
+      const favCard = ownLink && findOwnListing(ownLink);
+      if (favCard) root = favCard;
+    }
     // Панель на странице объявления вставляется соседом к якорю (например,
     // сразу после h1), поэтому контейнер может быть слишком узким — данные
     // ищем сначала в нём, затем на всей странице.
@@ -298,13 +330,25 @@
       pick(selectors, root) || (root !== document ? pick(selectors, document) : '');
 
     const title =
-      pickAny(['[data-marker="item-view/title-info"]', '[data-marker="item-title"]', 'h1']) ||
+      pickAny([
+        '[data-marker="item-view/title-info"]',
+        '[data-marker="item-title"]',
+        // карточка списка/избранного: заголовок — <strong> внутри ссылки;
+        '[class*="titleRoot-"] strong',
+        'h1',
+      ]) ||
+      // карточка избранного без titleRoot — название в ссылке (срезанный
+      // многоточием текст может быть и в <p>, и в самой <a>);
+      (root.querySelector?.('a[class*="_"] strong, a[href] strong')?.textContent.trim() ||
+        root.querySelector?.('a[href^="/"] p')?.textContent.trim()) ||
       'Без названия';
     const price =
       pickAny([
         '#bx_item-price-value',
         '[data-marker="item-view/item-price"]',
         '[data-marker="item-price-value"]',
+        // карточка списка/избранного: цена — h4 в строке цены;
+        '[class*="price-line"] h4',
         '.c-v-view-on-map-window-label',
       ]) || 'Цена не указана';
     // Ссылка — канонический адрес объявления по id, а не URL страницы/карточки,
@@ -420,10 +464,16 @@
       const anchor = findItemAnchor();
       return anchor ? anchor.el : document.body;
     }
-    return (
+    // Карточки избранного не имеют data-item-id — их находим по ссылке с id.
+    const byAttr =
       document.querySelector(`[data-item-id="${cssEscape(id)}"]`) ||
-      document.getElementById('i' + id)
+      document.getElementById('i' + id);
+    if (byAttr) return byAttr;
+    const linkEl = [...document.querySelectorAll('a[href]')].find(
+      (a) => getItemIdFromUrl(a.getAttribute('href') || '') === id
     );
+    if (!linkEl) return null;
+    return findOwnListing(linkEl) || linkEl.parentElement;
   }
 
   // Первый найденный якорь страницы объявления.
@@ -439,7 +489,10 @@
 
   /* ---------------- Модалка заметки ---------------- */
 
-  function openNoteModal(id) {
+  // Открыть модалку; fromPanel — панель, из которой она открыта (её карточка
+  // используется как источник метаданных, чтобы данные не «уезжали» в чужую
+  // карточку на страницах со списком).
+  function openNoteModal(id, fromPanel) {
     document.querySelector('.an-modal')?.remove();
 
     const note = notesCache[id];
@@ -475,7 +528,7 @@
     modal.querySelector('.an-modal__btn--cancel').onclick = close;
 
     modal.querySelector('.an-modal__btn--save').onclick = () => {
-      const container = findHostCard(id) || document.body;
+      const container = (fromPanel && findOwnListing(fromPanel)) || findHostCard(id) || document.body;
       // Пустой текст + отсутствие статуса => persistNote удалит заметку.
       persistNote(id, { ...extractData(container, id), text: textarea.value.trim() });
       patchAllForId(id);
@@ -507,23 +560,88 @@
     return panel;
   }
 
-  // Список объявлений (поиск, каталог, карта).
-  function injectListPanels() {
-    const cards = document.querySelectorAll(
-      '[data-marker="item"][data-item-id], [data-marker="snippet-item"]'
-    );
-    cards.forEach((card) => {
-      const id = getItemId(card);
-      if (!id) return;
-      // Уже есть наша панель с актуальным id — не трогаем (важно для SPA-ререндера).
-      const existing = card.querySelector(':scope > .an-panel, .an-panel');
-      if (existing && existing.dataset.itemId === id) return;
+  // Карточка объявления в списке: сначала стабильные маркеры выдачи/карты,
+  // затем — карточки страницы избранного. У карточек избранного нет ни
+  // data-marker="item", ни data-item-id: их якорь — data-marker="item-<id>"
+  // на самой карточке (плюс сердечко [data-marker="toggle-favorite-icon"]
+  // как запасной признак), а id берётся из ссылки объявления
+  // (href вида /voronezh/.../garazh_30_m_8048538485?context=…).
+  function findListingCards() {
+    const cards = new Set();
+    document
+      .querySelectorAll('[data-marker="item"][data-item-id], [data-marker="snippet-item"]')
+      .forEach((c) => cards.add(c));
+    // Карточки избранного: якорь — data-marker="item-<id>" на самой карточке.
+    // Ищем их напрямую по атрибуту, а не только через сердечко: Авито может
+    // менять/убирать разметку [data-marker="toggle-favorite-icon"], и тогда
+    // панели исчезали бы со всей страницы избранного.
+    document
+      .querySelectorAll('[data-marker^="item-"][class*="root-"]')
+      .forEach((c) => {
+        if (/^item-\d+$/.test(c.getAttribute('data-marker') || '')) cards.add(c);
+      });
+    // Запасной путь для карточек без data-marker="item-<id>": сердечко, затем
+    // ближайший родитель-карточка (или карточка по ссылке внутри).
+    document.querySelectorAll('[data-marker="toggle-favorite-icon"]').forEach((heart) => {
+      const card =
+        heart.closest('[data-marker^="item-"], [data-marker="item"], [data-item-id]') ||
+        findOwnListing(heart);
+      if (card) cards.add(card);
+    });
+    return [...cards];
+  }
 
-      // Вставляем в конец карточки, но не внутрь <a>, иначе клик по ссылке
-      // перехватывал бы все нажатия на кнопки.
-      const anchor = card.matches('a') ? card : null;
-      const target = anchor ? anchor.parentElement : card;
-      target.appendChild(createPanel(id, 'list'));
+  // Ссылка объявления внутри карточки — с необработанным href (без ?context=…).
+  function getCardLinkEl(card) {
+    const links = card.querySelectorAll('a[href]');
+    for (const a of links) {
+      const raw = a.getAttribute('href') || '';
+      if (getItemIdFromUrl(raw)) return a;
+    }
+    return null;
+  }
+
+  // Родительские цепочки панелей, которые мы уже обработали: если панель
+  // цела и её родитель не менялся — пропускаем без перестановки. Иначе
+  // (React перемонтировал карточку и убрал панель из subtree) панель
+  // пересоздаётся заново.
+  const panelHosts = new WeakMap();
+
+  function pickPanelHost(card) {
+    // Для карточек избранного (структура «фото | текст | пусто») панель
+    // кладём во вторую колонку с текстом — так она вписывается в макет
+    // сетки под адресом и датой.
+    const textCol = card.querySelector('[class*="column-2"]');
+    if (textCol && !card.matches('a')) return textCol;
+    // Вставляем не внутрь <a>, иначе клик по ссылке перехватывал бы все
+    // нажатия на кнопки.
+    if (card.matches('a')) return card.parentElement;
+    return card;
+  }
+
+  // Список объявлений (поиск, каталог, карта, избранное).
+  function injectListPanels() {
+    findListingCards().forEach((card) => {
+      let id = getItemId(card);
+      if (!id) {
+        const linkEl = getCardLinkEl(card);
+        if (linkEl) id = getItemIdFromUrl(linkEl.getAttribute('href'));
+      }
+      if (!id) return;
+      const host = pickPanelHost(card);
+      // Уже есть наша панель с актуальным id в нужном хосте — не трогаем
+      // (важно для SPA-ререндера). Если панель есть, но её хост изменился
+      // (карточку перемонтировали) — удаляем старую и ставим заново.
+      const existing = host.querySelector(':scope > .an-panel');
+      if (existing && existing.dataset.itemId === id) {
+        if (panelHosts.get(existing) === host) return;
+        panelHosts.set(existing, host);
+        return;
+      }
+      card.querySelectorAll('.an-panel').forEach((p) => p.remove());
+      const panel = createPanel(id, 'list');
+      host.appendChild(panel);
+      panelHosts.set(panel, host);
     });
   }
 

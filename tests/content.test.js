@@ -66,6 +66,55 @@ const ITEM_PAGE_30_HTML = `<!DOCTYPE html><html><body>
   <div id="bx_item-description"><div data-marker="item-view/item-description"><p>Продам гараж.</p></div></div>
 </div>`;
 
+// Страница «Избранное»: у карточек нет ни data-marker="item", ни
+// data-item-id — только data-marker="item-<id>", сердечко
+// [data-marker="toggle-favorite-icon"] и ссылки с ?context=. Панели должны
+// появляться и там (реальная разметка Авито, объявление 8048538485).
+// Карточка избранного (реальная разметка объявления 8048538485).
+const FAVORITE_CARD_1 = `
+      <div data-marker="item-8048538485" class="root-_364d26e25ce2cd85">
+        <div class="column-1-_364d26e25ce2cd85">
+          <a href="/voronezh/garazhi_i_mashinomesta/garazh_30_m_8048538485?context=H4sIAAAAAAAA_0q0MrKqLrYytlIqLkpWsi62srRSSkssyy_KLEktBvENrZQqQLSRkZVSeFKlhXNSfG6ImVFIVlhRRYBZVXpuoJJ1LSAAAP__GkcxckYAAAA"><img src="https://40.img.avito.st/image/1/example_garage.jpg" class="image-_364d26e25ce2cd85 square-_364d26e25ce2cd85"></a>
+        </div>
+        <div class="column-2-_364d26e25ce2cd85">
+          <div class="titleRoot-_364d26e25ce2cd85">
+            <a href="/voronezh/garazhi_i_mashinomesta/garazh_30_m_8048538485?context=H4sIAAAAAAAA" class="root-c2185349bc5ff8be"><p class="root-_14d41a14338204f3 ellipsis-_944974d79655ea36"><strong class="root-_37d97241d856b927">Гараж, 30 м²</strong></p></a>
+          </div>
+          <div class="price-line-_364d26e25ce2cd85">
+            <div class="root-_85f01667f505e7f8">
+              <div class="root-deba26d752eae893"><h4 class="root-d44e5228bec8f1d1">730&nbsp;000 ₽</h4></div>
+            </div>
+          </div>
+          <div class="root-f417271cf3c42559"><span class="addressLine-f417271cf3c42559">Воронежская обл., г.о. Воронеж, Советский район</span></div>
+          <p class="root-_14d41a14338204f3 size_s-cdae9647da886914">13 октября, 20:14</p>
+          <div class="topRight-_364d26e25ce2cd85"><div class="heart-af245fc77bac15c0" data-marker="toggle-favorite-icon"></div></div>
+        </div>
+        <div class="column-3-_364d26e25ce2cd85"></div>
+      </div>`;
+
+const FAVORITE_CARD_2 = `
+      <div data-marker="item-9988776655" class="root-_364d26e25ce2cd85">
+        <div class="column-1-_364d26e25ce2cd85"><a href="/voronezh/garazhi_i_mashinomesta/garazh_18_m_9988776655?context=zzz"><img src="https://40.img.avito.st/image/1/other.jpg"></a></div>
+        <div class="column-2-_364d26e25ce2cd85">
+          <div class="titleRoot-_364d26e25ce2cd85"><a href="/voronezh/garazhi_i_mashinomesta/garazh_18_m_9988776655?context=zzz"><strong>Гараж, 18 м²</strong></a></div>
+          <div class="price-line-_364d26e25ce2cd85"><h4>590&nbsp;000 ₽</h4></div>
+          <div class="topRight-_364d26e25ce2cd85"><div class="heart-af245fc77bac15c0" data-marker="toggle-favorite-icon"></div></div>
+        </div>
+      </div>`;
+
+const FAVORITES_PAGE_HTML = `<!DOCTYPE html><html><body>
+<div class="root-deba26d752eae893 direction_vertical-deba26d752eae893">
+  <div class="root-deba26d752eae893">
+    <div>${FAVORITE_CARD_1}
+    </div>
+  </div>
+  <div class="root-deba26d752eae893">
+    <div>${FAVORITE_CARD_2}
+    </div>
+  </div>
+</div>
+</body></html>`;
+
 let passed = 0;
 async function runTest(name, fn) {
   try {
@@ -552,6 +601,139 @@ async function main() {
     const chip = env.window.document.querySelector('.an-panel--chat .an-note-chip');
     assert.ok(chip.textContent.includes('торг'), 'чип чата не показывает превью заметки');
     assert.ok(chip.classList.contains('an-note-chip--has'), 'чип не подсвечен как существующая заметка');
+  });
+
+  /* ---------------- Страница избранного ---------------- */
+  console.log('\nстраница избранного (карточки без data-marker="item"):');
+
+    await runTest('панели появляются в карточках избранного (id из data-marker/slug)', async () => {
+    const env = makeEnv({
+      url: 'https://www.avito.ru/profile/favorites?tab=executor',
+      html: FAVORITES_PAGE_HTML,
+    });
+    await tick(env.window);
+    const { window } = env;
+    assert.ok(!window.document.querySelector('.an-panel--item'),
+      'на странице избранного не должна появляться панель объявления');
+    const panels = window.document.querySelectorAll('.an-panel:not(.an-panel--item)');
+    assert.strictEqual(panels.length, 2, 'панели должны появиться у обеих карточек');
+    assert.deepStrictEqual(
+      [...panels].map((p) => p.dataset.itemId).sort(),
+      ['8048538485', '9988776655']
+    );
+    // Панель кладём во вторую колонку с текстом — она вписывается в сетку
+    // карточки (фото | текст | пусто), а не перекрывает фото.
+    for (const p of panels) {
+      const col2 = p.closest('[class*="column-2"]');
+      assert.ok(col2, 'панель должна быть в текстовой колонке карточки');
+      assert.strictEqual(p.querySelectorAll('.an-btn').length, 3, 'нет трёх кнопок-статусов');
+      assert.strictEqual(p.querySelector('.an-note-chip').textContent, '+ Заметка');
+    }
+  });
+
+    await runTest('избранное: карточка без сердечка — панель всё равно появляется (по data-marker="item-<id>")', async () => {
+      // Авито может менять/убирать разметку toggle-favorite-icon — карточки
+      // избранного должны находиться и по стабильному якорю data-marker.
+      const noHeartHtml = FAVORITES_PAGE_HTML
+        .replace(/<div class="topRight[^]*?toggle-favorite-icon[^]*?<\/div><\/div>/g, '');
+      const env = makeEnv({
+        url: 'https://www.avito.ru/profile/favorites?tab=executor',
+        html: noHeartHtml,
+      });
+      await tick(env.window);
+      const panels = env.window.document.querySelectorAll('.an-panel');
+      assert.strictEqual(panels.length, 2, 'панели должны найтись даже без сердечек');
+      assert.deepStrictEqual(
+        [...panels].map((p) => p.dataset.itemId).sort(),
+        ['8048538485', '9988776655']
+      );
+    });
+
+    await runTest('клик по ✅ в избранном сохраняет метаданные карточки (название/цена/каноник/id)', async () => {
+    const env = makeEnv({
+      url: 'https://www.avito.ru/profile/favorites?tab=executor',
+      html: FAVORITES_PAGE_HTML,
+    });
+    await tick(env.window);
+    const panel = env.window.document.querySelector('.an-panel[data-item-id="8048538485"]');
+    panel.querySelector('.an-btn[data-emoji="✅"]').click();
+    await tick(env.window);
+    const note = env.getStored()['8048538485'];
+    assert.ok(note, 'заметка не сохранена');
+    assert.strictEqual(note.emoji, '✅');
+    assert.match(note.title, /Гараж, 30/u);
+    assert.match(note.price, /730\s*000/u);
+    assert.strictEqual(note.link, 'https://www.avito.ru/8048538485',
+      'ссылка — канонический адрес объявления, без ?context=');
+    assert.strictEqual(note.img, 'https://40.img.avito.st/image/1/example_garage.jpg');
+    // UI обновился: чип показывает существование заметки, появилась кнопка ✕.
+    const patched = env.window.document.querySelector('.an-panel[data-item-id="8048538485"]');
+    assert.ok(patched.querySelector('.an-note-chip--has'), 'чип не подсвечен');
+    assert.ok(patched.querySelector('.an-del-btn'), 'нет кнопки удаления');
+  });
+
+    await runTest('модалка заметки работает и в избранном', async () => {
+    const env = makeEnv({
+      url: 'https://www.avito.ru/profile/favorites?tab=executor',
+      html: FAVORITES_PAGE_HTML,
+    });
+    await tick(env.window);
+    const panel = env.window.document.querySelector('.an-panel[data-item-id="9988776655"]');
+    panel.querySelector('.an-note-chip').click();
+    const modal = env.window.document.querySelector('.an-modal');
+    assert.ok(modal, 'модалка не открылась');
+    modal.querySelector('.an-modal__textarea').value = 'торг уместен';
+    modal.querySelector('.an-modal__btn--save').click();
+    await tick(env.window);
+    const note = env.getStored()['9988776655'];
+    assert.strictEqual(note.text, 'торг уместен');
+    assert.match(note.title, /Гараж, 18/u);
+    const chip = env.window.document
+      .querySelector('.an-panel[data-item-id="9988776655"] .an-note-chip');
+    assert.ok(chip.textContent.includes('торг'), 'чип не показывает превью текста');
+  });
+
+    await runTest('observer не дублирует панели в избранном при мутациях рядом', async () => {
+    const env = makeEnv({
+      url: 'https://www.avito.ru/profile/favorites?tab=executor',
+      html: FAVORITES_PAGE_HTML,
+    });
+    const { window } = env;
+    await tick(window);
+    // Безобидная мутация: Авито дописывает элемент в первую карточку.
+    const extra = window.document.createElement('div');
+    extra.textContent = 'banner';
+    window.document.querySelector('[data-marker="item-8048538485"]').appendChild(extra);
+    await tick(window, 400);
+    assert.strictEqual(
+      window.document.querySelectorAll('.an-panel').length, 2,
+      'появились дубли панелей'
+    );
+  });
+
+    await runTest('React-перемонтаж карточки избранного — панель восстанавливается', async () => {
+    const env = makeEnv({
+      url: 'https://www.avito.ru/profile/favorites?tab=executor',
+      html: FAVORITES_PAGE_HTML,
+    });
+    const { window } = env;
+    const { document } = window;
+    await tick(window);
+    assert.ok(document.querySelector('.an-panel[data-item-id="8048538485"]'));
+
+    // Эмуляция перемонтажа: вся карточка заменена новым поддеревом
+    // (та же разметка, та же ссылка) — старая панель выпала из DOM.
+    const oldCard = document.querySelector('[data-marker="item-8048538485"]');
+    const parent = oldCard.parentElement;
+    const wrap = document.createElement('div');
+    wrap.innerHTML = FAVORITES_PAGE_HTML.match(
+      /<div data-marker="item-8048538485"[\s\S]*?<\/div>\s*<\/div>\s*<\/div>/)[0];
+    parent.replaceChild(wrap.firstChild, oldCard);
+
+    await tick(window, 400); // debounce observer = 300мс
+    const panel = document.querySelector('.an-panel[data-item-id="8048538485"]');
+    assert.ok(panel, 'панель не переинжектирована после перемонтажа карточки');
+    assert.ok(document.contains(panel), 'панель вне DOM');
   });
 
   console.log(`\n${passed} проверок пройдено.`);
