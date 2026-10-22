@@ -24,6 +24,17 @@
  *     js-* классы сохраняются. Панель вставляется СОСЕДОМ к якорю (после h1),
  *     а не внутрь него, и перед каждой вставкой проверяется, что она всё ещё
  *     в DOM — React может перестроить дерево в течение жизни страницы.
+ *  6. Всплывающий чат (мини-мессенджер), прикреплённый к объявлению: если в
+ *     шапке чата рядом с именем продавца есть ссылка на объявление
+ *     (a[data-marker="header/itemLink"]), под ней рисуется компактная панель
+ *     статусов/заметки; метаданные для заметки берутся из самой шапки чата
+ *     (название и цена в ссылке itemLink, картинка из превью), а не со
+ *     страницы под модалкой.
+ *  7. Заметки-эмодзи множественные: под капотом — массив строк `emojis`
+ *     (например ['✅','🛠️']); легаси-строка `emoji` читается и мигрируется
+ *     при первой записи. Фото первого изображения объявления сохраняется в
+ *     поле `img` (со страницы объявления, с карточки выдачи и из превью
+ *     шапки чата) и выводится в popup в списке объявлений.
  */
 (function () {
   'use strict';
@@ -32,8 +43,35 @@
   window.avitoNotesInitialized = true;
 
   const STORAGE_KEY = 'avito_notes_v1';
-  const EMOJIS = ['✅', '❌', '❓'];
+  // Набор заметок (эмодзи-статусов). Выбор МНОЖЕСТВЕННЫЙ: можно поставить
+  // сколько угодно эмодзи из набора; под капотом хранится массив строк в
+  // поле note.emojis (легаси-строка note.emoji читается и мигрируется).
+  const EMOJIS = ['✅', '❌', '❓', '🛠️', '🕒'];
   const PREVIEW_LEN = 16;
+
+  /* ---------------- Нормализация заметок ---------------- */
+
+  // Приведение списка эмодзи к каноничному виду: массив уникальных непустых
+  // строк в порядке набора EMOJIS. Строка (легаси-формат поля `emoji`) тоже
+  // принимается — так старые записи читаются без отдельной миграции.
+  function normalizeEmojis(value) {
+    const arr = Array.isArray(value) ? value : value ? [value] : [];
+    const set = new Set(arr.map((e) => String(e)).filter(Boolean));
+    const ordered = EMOJIS.filter((e) => set.has(e));
+    // Неизвестные (например, из будущей версии набора) — сохраняем в конце.
+    [...set].forEach((e) => {
+      if (!EMOJIS.includes(e)) ordered.push(e);
+    });
+    return ordered;
+  }
+
+  // Актуальные эмодзи заметки: новый массив `emojis`, либо легаси-строка
+  // `emoji` (записи до перехода на множественный выбор).
+  function noteEmojis(note) {
+    if (!note) return [];
+    if (Array.isArray(note.emojis)) return normalizeEmojis(note.emojis);
+    return normalizeEmojis(note.emoji);
+  }
 
   // Стабильные якоря страницы объявления (не зависят от хеш-классов сборки).
   // Каждый якорь описывает, КУДА вставлять панель относительно него:
@@ -52,6 +90,13 @@
     { selector: '#item-description', mode: 'append' },
     { selector: '[data-marker="item-view/item-description"]', mode: 'append' },
   ];
+
+  // Шапка всплывающего чата (мини-мессенджер, прикреплённый к объявлению):
+  // рядом с именем продавца есть ссылка на объявление —
+  //   <a data-marker="header/itemLink" href="/.../garazh_30_m_8457554115">…</a>
+  // По её наличию определяем такой чат и рисуем в шапке компактную панель.
+  // Селекторы хеш-классов не используем — они меняются от сборки к сборке.
+  const CHAT_HEADER_ITEM_LINK = 'a[data-marker="header/itemLink"][href]';
 
   // Признаки страницы объявления в DOM. URL ненадёжен: актуальный адрес
   // объявления — /voronezh/garazhi_i_mashinomesta/garazh_20_m_8093949601,
@@ -83,17 +128,26 @@
   // Единая точка записи: синхронизируем кэш и пишем только весь объект целиком,
   // чтобы параллельные set() не затёрли чужие записи.
   // Пустая заметка не хранится: если после применения патча в ней нет ни
-  // статуса (emoji), ни текста — запись удаляется из хранилища полностью.
+  // эмодзи (emojis), ни текста — запись удаляется из хранилища полностью.
+  // Эмодзи нормализуются в массив (`emojis`): легаси-строка `emoji` из
+  // старых записей при любой новой записи мигрируется в массив.
   function persistNote(id, patch) {
     if (!id) {
       console.warn('[Avito Notes] Нет ID для сохранения');
       return;
     }
-    const next = { ...notesCache[id], ...patch, timestamp: Date.now() };
-    if (!next.emoji && !String(next.text || '').trim()) {
+    const merged = { ...notesCache[id], ...patch, timestamp: Date.now() };
+    if ('emojis' in patch || 'emoji' in patch) {
+      merged.emojis = normalizeEmojis('emojis' in patch ? patch.emojis : patch.emoji);
+      delete merged.emoji; // единый источник правды — emojis
+    } else {
+      merged.emojis = noteEmojis(merged);
+      delete merged.emoji;
+    }
+    if (!merged.emojis.length && !String(merged.text || '').trim()) {
       delete notesCache[id];
     } else {
-      notesCache[id] = next;
+      notesCache[id] = merged;
     }
     chrome.storage.local.set({ [STORAGE_KEY]: notesCache });
   }
@@ -184,6 +238,45 @@
     return null;
   }
 
+  // Фото первого изображения объявления. Надёжный источник на странице
+  // объявления — галерея (#bx_item-gallery / data-marker main-gallery),
+  // т.к. разметка с itemprop="image" в новых сборках отсутствует, а общий
+  // «первый img» внутри контейнера мог оказаться аватаром продавца или
+  // иконкой. Для карточек выдачи — изображение сниппета (lazy-src/alt).
+  // Пропускаем пиксели-заглушки (1x1 data:), чтобы в заметку не попадал мусор.
+  function isRealImageSrc(src) {
+    if (!src) return false;
+    if (src.startsWith('data:')) return !/;\s*base64,.{0,32}={0,2}$/.test(src);
+    return true;
+  }
+
+  function firstImageUrl(scope) {
+    if (!scope || !scope.querySelector) return '';
+    const selectors = [
+      '#bx_item-gallery img[src]',
+      '[data-marker="item-view/main-gallery"] img[src]',
+      'img[itemprop="image"]',
+      '[data-marker="item-image"] img[src], [data-marker="snippet-image"] img[src], [data-marker="image-from-storage"] img[src]',
+      '[data-marker="item-image"] img[data-lazy-load][src], [data-marker="snippet-image"] img[data-lazy-load][src]',
+      'img[src]',
+    ];
+    for (const sel of selectors) {
+      let nodes = [];
+      try {
+        nodes = scope.querySelectorAll(sel);
+      } catch (e) { /* невалидный селектор */ }
+      for (const el of nodes) {
+        // src может быть data:-заглушкой, пока Авито подгружает картинку по
+        // data-lazy-load — берём реальный адрес из дата-атрибута.
+        const candidates = [el.getAttribute('data-lazy-load'), el.src, el.currentSrc];
+        for (const c of candidates) {
+          if (c && isRealImageSrc(c)) return c;
+        }
+      }
+    }
+    return '';
+  }
+
   // Метаданные объявления для заметки. id передаётся явно: ссылка всегда
   // строится на само объявление (buildItemLink), а не наследуется от адреса,
   // с которого заметка была сделана (иначе клик в popup открывал поиск).
@@ -217,11 +310,11 @@
     // Ссылка — канонический адрес объявления по id, а не URL страницы/карточки,
     // с которой заметка была сделана (иначе клик в popup открывал поиск).
     const link = buildItemLink(id);
+    // Фото первого изображения: сначала из контейнера (галерея страницы /
+    // картинка карточки выдачи), затем — с уровня всей страницы.
     const img =
-      root.querySelector?.('img[itemprop="image"]')?.src ||
-      root.querySelector?.('img[src]')?.src ||
-      document.querySelector?.('#bx_item-gallery img[src]')?.src ||
-      '';
+      firstImageUrl(root) ||
+      (root !== document ? firstImageUrl(document) : '');
     // Координаты: страница карты Авито хранит их в data-атрибутах обёртки карты.
     let coords = null;
     try {
@@ -233,10 +326,29 @@
 
   /* ---------------- Рендер панели ---------------- */
 
-  // Есть ли у объявления заметка (статус и/или текст) — по этому же критерию
+  // Есть ли у объявления заметка (эмодзи и/или текст) — по этому же критерию
   // persistNote решает, хранить запись или удалить её.
   function hasNote(note) {
-    return !!(note && (note.emoji || String(note.text || '').trim()));
+    return !!(note && (noteEmojis(note).length || String(note.text || '').trim()));
+  }
+
+  // Кнопки-заметки: множественный выбор — активны все эмодзи из массива
+  // note.emojis (легаси-строка emoji тоже учитывается через noteEmojis).
+  function emojiButtonsHtml(note) {
+    const active = new Set(noteEmojis(note));
+    return EMOJIS.map(
+      (e) =>
+        `<button class="an-btn${active.has(e) ? ' an-btn--active' : ''}"` +
+        ` data-emoji="${e}" type="button" title="Заметка ${e}">${e}</button>`
+    ).join('');
+  }
+
+  // Кнопки панелей по эмодзи: составные символы с variation selector
+  // (например 🛠️ = U+1F6E0 U+FE0F) не матчатся css-селектором
+  // [data-emoji="…"] в некоторых реализациях querySelector — ищем перебором
+  // по dataset.
+  function findEmojiButtons(root, emoji) {
+    return [...root.querySelectorAll('.an-btn')].filter((b) => b.dataset.emoji === emoji);
   }
 
   function panelHtml(id, note) {
@@ -244,15 +356,12 @@
     const preview = note?.text
       ? note.text.slice(0, PREVIEW_LEN) + (note.text.length > PREVIEW_LEN ? '…' : '')
       : '';
-    const buttons = EMOJIS.map(
-      (e) =>
-        `<button class="an-btn${note?.emoji === e ? ' an-btn--active' : ''}"` +
-        ` data-emoji="${e}" type="button" title="Статус ${e}">${e}</button>`
-    ).join('');
+    const buttons = emojiButtonsHtml(note);
     // Чип: если заметки нет — лаконичное «+ Заметка»; если есть — превью
-    // текста (или статус, когда текста нет), чтобы по панели было видно,
+    // текста (или набор эмодзи, когда текста нет), чтобы по панели было видно,
     // что заметка существует и что в ней.
-    const chipLabel = exists ? (preview || `💬 ${note.emoji}`) : '+ Заметка';
+    const emojisStr = noteEmojis(note).join(' ');
+    const chipLabel = exists ? (preview || emojisStr || '💬') : '+ Заметка';
     const chipCls = exists ? 'an-note-chip an-note-chip--has' : 'an-note-chip';
     const chipTitle = exists
       ? escapeAttr(`Заметка: ${note.text || '(без текста)'}`)
@@ -287,38 +396,10 @@
   function patchPanel(panel, id) {
     const note = notesCache[id];
     panel.dataset.itemId = id;
-    panel.innerHTML = panelHtml(id, note);
-    bindPanelEvents(panel, id);
-  }
-
-  function bindPanelEvents(panel, id) {
-    panel.querySelectorAll('.an-btn').forEach((btn) => {
-      btn.addEventListener('click', (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        const emoji = btn.dataset.emoji;
-        const current = notesCache[id]?.emoji;
-        const container = findHostCard(id) || document.body;
-        // Снимаем статус: если текст пустой, persistNote удалит заметку целиком
-        // (пустые заметки не храним).
-        persistNote(id, { ...extractData(container, id), emoji: current === emoji ? null : emoji });
-        patchAllForId(id);
-      });
-    });
-
-    panel.querySelector('.an-note-chip')?.addEventListener('click', (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      openNoteModal(id);
-    });
-
-    // Удаление заметки прямо из панели (без открытия модалки).
-    panel.querySelector('.an-del-btn')?.addEventListener('click', (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      deleteNote(id);
-      patchAllForId(id);
-    });
+    // Чат-панель компактнее (без ✕) — свой рендер.
+    panel.innerHTML = panel.classList.contains('an-panel--chat')
+      ? chatPanelHtml(note)
+      : panelHtml(id, note);
   }
 
   function patchAllForId(id) {
@@ -416,10 +497,13 @@
 
   function createPanel(id, variant) {
     const panel = document.createElement('div');
-    panel.className = 'an-panel' + (variant === 'item' ? ' an-panel--item' : '');
+    panel.className = 'an-panel' +
+      (variant === 'item' ? ' an-panel--item' : variant === 'chat' ? ' an-panel--chat' : '');
     panel.dataset.itemId = id;
-    panel.innerHTML = panelHtml(id, notesCache[id]);
-    bindPanelEvents(panel, id);
+    // Чат-панель компактнее (без ✕) — свой рендер.
+    panel.innerHTML = variant === 'chat'
+      ? chatPanelHtml(notesCache[id])
+      : panelHtml(id, notesCache[id]);
     return panel;
   }
 
@@ -504,10 +588,142 @@
     });
   }
 
+  /* ---------------- Всплывающий чат (мини-мессенджер) ---------------- */
+
+  // Все шапки чатов, в которых рядом с именем продавца есть ссылка на
+  // объявление (data-marker="header/itemLink"). Так отличаем чат,
+  // прикреплённый к объявлению, от обычных переписок.
+  function findChatHeaders() {
+    const result = [];
+    const seen = new Set();
+    document.querySelectorAll(CHAT_HEADER_ITEM_LINK).forEach((link) => {
+      const id = getItemIdFromUrl(link.href);
+      if (!id) return;
+      // Контейнер вставки — блок информации о чате: infoWrap (классы
+      // хеш-сборки), иначе ближайший ancestor с wrap-, иначе container-,
+      // иначе родитель блока ссылки (панель встанет под именем продавца
+      // и ссылкой на объявление).
+      const header =
+        link.closest('[class*="infoWrap"]') ||
+        link.closest('[class*="wrap-"]') ||
+        link.closest('[class*="container-"]') ||
+        link.parentElement;
+      // Защита от дублей: если две ссылки оказались внутри одного контейнера.
+      if (!header || seen.has(header)) return;
+      seen.add(header);
+      result.push({ header, link, id });
+    });
+    return result;
+  }
+
+  // Данные объявления берутся прямо из шапки чата (название + цена в ссылке
+  // itemLink), а не со страницы под модалкой: под всплывающим чатом может
+  // быть любая страница (поиск/каталог), где этих данных нет.
+  function extractChatData(link, id) {
+    const titleEl = link.querySelector('.subtitle-e80bf4537dbf73f0') ||
+      // запасной вариант по стабильному elementtiming (хеш-классы меняются)
+      link.querySelector('[elementtiming="msg.channel.item-title"]');
+    const priceEl = link.querySelector('[class*="itemPrice"]');
+    const clean = (s) => String(s || '').replace(/\u00a0/g, ' ').trim();
+    // Фото первого изображения объявления — из превью в шапке чата: Авито
+    // задаёт его как background-image на <a data-markers="itemPreview">;
+    // если внутри превью <img> — берём src (с учётом lazy-load).
+    let img = '';
+    const previewScope = link.closest('[class*="container"]') || link.parentElement;
+    const preview = previewScope?.querySelector('[data-markers="itemPreview"]');
+    if (preview) {
+      const bg = /url\("?([^")]+)"?\)/.exec(preview.getAttribute('style') || '')?.[1];
+      img = (bg && isRealImageSrc(bg) ? bg : '') || firstImageUrl(preview);
+    }
+    return {
+      title: clean(titleEl?.textContent) || 'Без названия',
+      price: clean(priceEl?.textContent) || 'Цена не указана',
+      link: buildItemLink(id),
+      img,
+      coords: null,
+    };
+  }
+
+  // Компактная панель в шапке чата: только заметки-эмодзи и чип (без ✕ —
+  // удаление доступно в модалке и на основной панели объявления).
+  function chatPanelHtml(note) {
+    const exists = hasNote(note);
+    const preview = note?.text
+      ? note.text.slice(0, PREVIEW_LEN) + (note.text.length > PREVIEW_LEN ? '…' : '')
+      : '';
+    const buttons = emojiButtonsHtml(note);
+    const chipLabel = exists ? (preview || noteEmojis(note).join(' ') || '💬') : '+';
+    const chipCls = exists ? 'an-note-chip an-note-chip--has' : 'an-note-chip';
+    const chipTitle = exists
+      ? escapeAttr(`Заметка: ${note.text || '(без текста)'}`)
+      : 'Добавить заметку';
+    return buttons + `<span class="${chipCls}" title="${chipTitle}">${escapeHtml(chipLabel)}</span>`;
+  }
+
+  // Единый обработчик кликов панелей через делегирование на document:
+  // работает и для новых панелей (чат может появиться в любой момент),
+  // и после перемонтажа шапки React без перепривязки слушателей.
+  // id берётся из dataset панели, поэтому корректен даже если панель
+  // переиспользована под другое объявление.
+  function onPanelClick(e) {
+    const panel = e.target.closest?.('.an-panel');
+    if (!panel) return;
+    const id = panel.dataset.itemId;
+    if (!id) return;
+
+    const btn = e.target.closest('.an-btn');
+    const chip = !btn && e.target.closest('.an-note-chip');
+    const del = !btn && !chip && e.target.closest('.an-del-btn');
+    if (!btn && !chip && !del) return;
+
+    e.preventDefault();
+    e.stopPropagation();
+
+    if (btn) {
+      // Множественный выбор: клик по эмодзи добавляет его к набору, повторный
+      // клик по активному — убирает. Под капотом — массив строк `emojis`.
+      const emoji = btn.dataset.emoji;
+      const current = noteEmojis(notesCache[id]);
+      const next = current.includes(emoji)
+        ? current.filter((x) => x !== emoji)
+        : [...current, emoji];
+      // Метаданные: для чата — из шапки чата (под модалкой может быть любая
+      // страница), иначе — с карточки/страницы объявления.
+      const chatLink = panel.classList.contains('an-panel--chat')
+        ? panel.parentElement?.querySelector(CHAT_HEADER_ITEM_LINK)
+        : null;
+      const data = chatLink
+        ? extractChatData(chatLink, id)
+        : extractData(findHostCard(id) || document.body, id);
+      persistNote(id, { ...data, emojis: next });
+      patchAllForId(id);
+    } else if (chip) {
+      openNoteModal(id);
+    } else if (del) {
+      deleteNote(id);
+      patchAllForId(id);
+    }
+  }
+
+  document.addEventListener('click', onPanelClick, true);
+
+  // Расставить компактные панели по шапкам всплывающих чатов.
+  function injectChatPanels() {
+    findChatHeaders().forEach(({ header, id }) => {
+      // Уже есть панель этого объявления в этой шапке — не трогаем
+      // (обработчики делегированы, перепривязка не нужна).
+      const existing = header.querySelector(':scope > .an-panel--chat');
+      if (existing && existing.dataset.itemId === id) return;
+      if (existing) existing.remove(); // id изменился (шапка переиспользована под другой чат)
+      header.appendChild(createPanel(id, 'chat'));
+    });
+  }
+
   function init() {
     try {
       injectListPanels();
       injectItemPanel();
+      injectChatPanels();
     } catch (e) {
       console.error('[Avito Notes] Ошибка в init:', e);
     }

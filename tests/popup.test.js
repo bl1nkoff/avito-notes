@@ -28,6 +28,8 @@ const {
   sortNotes,
   filterNotes,
   noteItemHtml,
+  noteEmojis,
+  formatNoteDateTime,
   resolveNoteUrl,
 } = require('../popup.js');
 
@@ -133,12 +135,52 @@ runTest('отсутствующий timestamp не роняет сортиров
   assert.deepStrictEqual(r.map((n) => n.id), [2, 1]);
 });
 
+/* ---------------- noteEmojis (множественный выбор) ---------------- */
+console.log('\nnoteEmojis:');
+runTest('массив emojis читается как есть', () => {
+  assert.deepStrictEqual(noteEmojis({ emojis: ['✅', '🕒'] }), ['✅', '🕒']);
+});
+runTest('легаси-строка emoji приводится к массиву', () => {
+  assert.deepStrictEqual(noteEmojis({ emoji: '❌' }), ['❌']);
+});
+runTest('пусто / нет заметки -> []', () => {
+  assert.deepStrictEqual(noteEmojis({}), []);
+  assert.deepStrictEqual(noteEmojis(null), []);
+});
+runTest('дубликаты убираются, порядок — канонический по набору', () => {
+  assert.deepStrictEqual(noteEmojis({ emojis: ['🕒', '✅', '🕒', '❌'] }), ['✅', '❌', '🕒']);
+});
+runTest('неизвестные эмодзи остаются в конце', () => {
+  assert.deepStrictEqual(noteEmojis({ emojis: ['🛋️', '✅'] }), ['✅', '🛋️']);
+});
+
+/* ---------------- formatNoteDateTime ---------------- */
+console.log('\nformatNoteDateTime:');
+runTest('формат «HH:mm, D MMM YY» (ru-локаль)', () => {
+  // Фиксируем ru — результат не должен зависеть от локали устройства.
+  const origDateTimeFormat = global.Intl.DateTimeFormat;
+  global.Intl.DateTimeFormat = new Proxy(origDateTimeFormat, {
+    construct(T, args) {
+      const [locale = 'ru', opts] = args;
+      return new origDateTimeFormat(locale === undefined ? 'ru' : locale, opts);
+    },
+  });
+  try {
+    const ts = new Date(2026, 0, 2, 13, 20).getTime();
+    assert.strictEqual(formatNoteDateTime(ts), '13:20, 2 янв 26');
+    const ts2 = new Date(2025, 10, 5, 9, 5).getTime();
+    assert.strictEqual(formatNoteDateTime(ts2), '09:05, 5 нояб 25');
+  } finally {
+    global.Intl.DateTimeFormat = origDateTimeFormat;
+  }
+});
+
 /* ---------------- filterNotes ---------------- */
 console.log('\nfilterNotes:');
 const fnotes = [
-  { title: 'Диван кожаный', text: 'торг уместен', emoji: '🛋️' },
-  { title: 'Холодильник', text: '', emoji: '❄️' },
-  { title: 'Кресло', text: 'Договорная цена, TORGOVAYA', emoji: '🪑' },
+  { title: 'Диван кожаный', text: 'торг уместен', emojis: ['🛋️'] },
+  { title: 'Холодильник', text: '', emojis: ['❄️', '✅'] },
+  { title: 'Кресло', text: 'Договорная цена, TORGOVAYA', emoji: '🪑' }, // легаси-строка
 ];
 runTest('поиск по title (регистронезависимый)', () => {
   assert.strictEqual(filterNotes(fnotes, { search: 'диван', emojiFilter: '' }).length, 1);
@@ -151,6 +193,16 @@ runTest('фильтр по emoji', () => {
   const res = filterNotes(fnotes, { search: '', emojiFilter: '❄️' });
   assert.strictEqual(res.length, 1);
   assert.strictEqual(res[0].title, 'Холодильник');
+});
+runTest('множественный набор: фильтр матчит любой эмодзи из массива', () => {
+  // Холодильник содержит ['❄️','✅'] — фильтр по ✅ должен его найти.
+  const res = filterNotes(fnotes, { search: '', emojiFilter: '✅' });
+  assert.deepStrictEqual(res.map((n) => n.title), ['Холодильник']);
+});
+runTest('легаси-строка emoji тоже фильтруется', () => {
+  const res = filterNotes(fnotes, { search: '', emojiFilter: '🪑' });
+  assert.strictEqual(res.length, 1);
+  assert.strictEqual(res[0].title, 'Кресло');
 });
 runTest('пустой поиск/фильтр -> всё', () => {
   assert.strictEqual(filterNotes(fnotes, { search: '', emojiFilter: '' }).length, 3);
@@ -188,6 +240,30 @@ runTest('у каждой заметки есть кнопка удаления',
 runTest('emoji по умолчанию 💬', () => {
   const html = noteItemHtml({ title: 'T', price: '1 ₽', timestamp: Date.now() });
   assert.ok(html.includes('💬'));
+});
+runTest('несколько эмодзи выводятся все через пробел', () => {
+  const html = noteItemHtml({ title: 'T', price: '1 ₽', timestamp: 1, emojis: ['✅', '🛠️', '🕒'] });
+  assert.ok(html.includes('✅ 🛠️ 🕒'), 'в заголовке должны быть все эмодзи набора');
+});
+runTest('фото объявления выводится как .note-img', () => {
+  const html = noteItemHtml({
+    title: 'T', price: '1 ₽', timestamp: 1,
+    img: 'https://c70.img.avito.st/image/1/ABC',
+  });
+  assert.ok(html.includes('class="note-img"'), 'нет блока фото');
+  assert.ok(html.includes('src="https://c70.img.avito.st/image/1/ABC"'));
+});
+runTest('без фото картинка не рендерится (старые заметки)', () => {
+  const html = noteItemHtml({ title: 'T', price: '1 ₽', timestamp: 1 });
+  assert.ok(!html.includes('note-img'), 'не должно быть <img> у заметки без img');
+});
+runTest('src фото экранируется (XSS в атрибуте)', () => {
+  const html = noteItemHtml({
+    title: 'T', price: '1 ₽', timestamp: 1,
+    img: 'x" onerror="alert(1)',
+  });
+  assert.ok(!html.includes('onerror="alert'), 'атрибут не должен разрываться кавычкой');
+  assert.ok(html.includes('&quot;'));
 });
 runTest('рендер в реальном DOM: заголовок безопасен', () => {
   const d = new JSDOM('<!doctype html><html><body></body></html>').window.document;
@@ -252,11 +328,12 @@ runTest('нет ни ссылки, ни id -> пустая строка (кли�
   const STORAGE_KEY = 'avito_notes_v1';
   let sampleNotes = {
     // id в ключах хранилища; link — канонический адрес объявления (как пишет content.js).
-    '111': { title: 'Диван', text: 'торговаться', price: '300 ₽', emoji: '✅', timestamp: 30, link: 'https://www.avito.ru/111' },
+    // emojis — массив строк (множественный выбор), img — фото первого изображения.
+    '111': { title: 'Диван', text: 'торговаться', price: '300 ₽', emojis: ['✅', '🕒'], timestamp: 30, link: 'https://www.avito.ru/111', img: 'https://c70.img.avito.st/image/1/DIVAN' },
     // Старая заметка: ссылка не сохранялась — клик должен восстановить адрес по id.
     '222': { title: 'Холодильник', text: '', price: 'Договорная', emoji: '❌', timestamp: 10 },
     // Старая заметка с битой ссылкой на страницу поиска (редирект) — тоже починится по id.
-    '333': { title: 'Кресло <b>крутое</b>', text: 'привоз в пятницу', price: '100 ₽', emoji: '❓', timestamp: 20, link: 'https://www.avito.ru/moskva/search?q=кресло' },
+    '333': { title: 'Кресло <b>крутое</b>', text: 'привоз в пятницу', price: '100 ₽', emojis: ['❓'], timestamp: 20, link: 'https://www.avito.ru/moskva/search?q=кресло' },
   };
   const createdTabs = [];
   let storageChangeHandler = null;
@@ -302,10 +379,15 @@ runTest('нет ни ссылки, ни id -> пустая строка (кли�
     assert.strictEqual(items().length, 3);
   });
   await runTest('по умолчанию сортировка "сначала новые"', () => {
-    assert.deepStrictEqual(titles(), ['✅ Диван', '❓ Кресло <b>крутое</b>', '❌ Холодильник']);
+    assert.deepStrictEqual(titles(), ['✅ 🕒 Диван', '❓ Кресло <b>крутое</b>', '❌ Холодильник']);
   });
   await runTest('XSS: "<b>крутое</b>" рендерится текстом, а не разметкой', () => {
     assert.strictEqual(d.querySelector('#notesList b'), null);
+  });
+  await runTest('фото объявления выводится в списке (img из хранилища)', async () => {
+    const imgs = [...d.querySelectorAll('#notesList .note-img')];
+    assert.strictEqual(imgs.length, 1, 'только у заметки 111 есть img');
+    assert.strictEqual(imgs[0].getAttribute('src'), 'https://c70.img.avito.st/image/1/DIVAN');
   });
   await runTest('фильтр по emoji из select', async () => {
     const sel = d.getElementById('emojiFilter');
@@ -314,6 +396,19 @@ runTest('нет ни ссылки, ни id -> пустая строка (кли�
     await flush();
     assert.deepStrictEqual(titles(), ['❌ Холодильник']);
     sel.value = ''; // возврат фильтра, чтобы не влиять на следующий тест
+    sel.dispatchEvent(new dom.window.Event('change'));
+    await flush();
+  });
+  await runTest('новый эмодзи 🕒 доступен в фильтре и матчит множественный набор', async () => {
+    const sel = d.getElementById('emojiFilter');
+    assert.ok([...sel.options].some((o) => o.value === '🕒'), 'в select нет опции 🕒');
+    assert.ok([...sel.options].some((o) => o.value === '🛠️'), 'в select нет опции 🛠️');
+    sel.value = '🕒';
+    sel.dispatchEvent(new dom.window.Event('change'));
+    await flush();
+    // Диван имеет emojis ['✅','🕒'] — должен найтись по 🕒.
+    assert.deepStrictEqual(titles(), ['✅ 🕒 Диван']);
+    sel.value = '';
     sel.dispatchEvent(new dom.window.Event('change'));
     await flush();
   });
@@ -332,7 +427,7 @@ runTest('нет ни ссылки, ни id -> пустая строка (кли�
     sort.value = 'price_asc';
     sort.dispatchEvent(new dom.window.Event('change'));
     await flush();
-    assert.deepStrictEqual(titles(), ['❓ Кресло <b>крутое</b>', '✅ Диван', '❌ Холодильник']);
+    assert.deepStrictEqual(titles(), ['❓ Кресло <b>крутое</b>', '✅ 🕒 Диван', '❌ Холодильник']);
   });
   await runTest('клик по заметке открывает само объявление, а не страницу поиска', async () => {
     createdTabs.length = 0;
@@ -356,7 +451,7 @@ runTest('нет ни ссылки, ни id -> пустая строка (кли�
     delBtn.dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true }));
     await flush(); // deleteStoredNote -> set -> renderNotes
     assert.deepStrictEqual(createdTabs, [], 'клик по удалению не должен открывать объявление');
-    assert.deepStrictEqual(titles(), ['✅ Диван', '❌ Холодильник'], 'заметка «Кресло» должна исчезнуть из списка');
+    assert.deepStrictEqual(titles(), ['✅ 🕒 Диван', '❌ Холодильник'], 'заметка «Кресло» должна исчезнуть из списка');
     assert.strictEqual(sampleNotes['333'], undefined, 'запись должна удалиться из хранилища');
     assert.ok(sampleNotes['111'] && sampleNotes['222'], 'остальные заметки не задеты');
   });

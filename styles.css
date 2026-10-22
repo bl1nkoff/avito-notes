@@ -23,6 +23,25 @@
   box-sizing: border-box;
 }
 
+/* Компактная панель в шапке всплывающего чата (мини-мессенджер):
+   вписывается в строку рядом с именем продавца и ссылкой на объявление. */
+.an-panel--chat {
+  flex-wrap: nowrap;
+  gap: 4px;
+  margin: 2px 0 0;
+}
+
+.an-panel--chat .an-btn {
+  font-size: 15px;
+  padding: 2px;
+}
+
+.an-panel--chat .an-note-chip {
+  max-width: 110px;
+  font-size: 12px;
+  padding: 2px 6px;
+}
+
 .an-btn {
   cursor: pointer;
   background: none;
